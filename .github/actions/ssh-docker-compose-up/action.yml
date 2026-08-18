@@ -1,0 +1,93 @@
+name: SSH Docker Compose Pull & Up (wrapped)
+description: >-
+  Run "docker compose pull && docker compose up -d" on a remote host over SSH,
+  via appleboy/ssh-action. Optionally cd into a working directory and/or target
+  a specific compose file. Thin composite wrapper — the only shell is assembling
+  the command string; execution is delegated to the published action. GitHub +
+  Gitea compatible (Gitea runners need Docker and must allow fetching GitHub
+  actions).
+
+inputs:
+  host:
+    description: 'Remote host (IP or domain).'
+    required: true
+  port:
+    description: 'SSH port.'
+    required: false
+    default: '22'
+  username:
+    description: 'SSH user.'
+    required: true
+  key:
+    description: 'Private key (PEM). Provide via secrets.'
+    required: false
+    default: ''
+  password:
+    description: 'SSH password (used if key is empty).'
+    required: false
+    default: ''
+  passphrase:
+    description: 'Passphrase to decrypt the private key if protected.'
+    required: false
+    default: ''
+  working-directory:
+    description: 'Remote directory to cd into before running compose (optional).'
+    required: false
+    default: ''
+  compose-file:
+    description: 'Remote compose file path appended as -f (e.g. "/opt/app/docker-compose.yml").'
+    required: false
+    default: ''
+  pull:
+    description: 'Run "docker compose pull" before "up -d" (default true).'
+    required: false
+    default: 'true'
+  command-timeout:
+    description: 'Max execution time for the remote command, e.g. "10m", "1h".'
+    required: false
+    default: '10m'
+  debug:
+    description: 'Set true for verbose SSH logging.'
+    required: false
+    default: 'false'
+
+outputs:
+  stdout:
+    description: 'Standard output of the compose command (capture_stdout enabled).'
+    value: ${{ steps.run.outputs.stdout }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build compose command
+      id: build
+      shell: bash
+      env:
+        WD: ${{ inputs.working-directory }}
+        CF: ${{ inputs.compose-file }}
+        PULL: ${{ inputs.pull }}
+      run: |
+        cmd=""
+        if [ -n "$WD" ]; then cmd="cd '$WD' && "; fi
+        cf_flag=""
+        if [ -n "$CF" ]; then cf_flag="-f '$CF' "; fi
+        if [ "$PULL" = "true" ]; then
+          cmd="${cmd}docker compose ${cf_flag}pull && "
+        fi
+        cmd="${cmd}docker compose ${cf_flag}up -d"
+        printf 'cmd<<EOF\n%s\nEOF\n' "$cmd" >> "$GITHUB_OUTPUT"
+
+    - name: SSH docker compose pull && up
+      id: run
+      uses: appleboy/ssh-action@v1.2.5
+      with:
+        host: ${{ inputs.host }}
+        port: ${{ inputs.port }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.key }}
+        password: ${{ inputs.password }}
+        passphrase: ${{ inputs.passphrase }}
+        script: ${{ steps.build.outputs.cmd }}
+        command_timeout: ${{ inputs.command-timeout }}
+        debug: ${{ inputs.debug }}
+        capture_stdout: 'true'

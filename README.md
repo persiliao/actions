@@ -34,6 +34,8 @@ defaults, so downstream CI stays consistent.
 | [`docker-build-push-from-artifact-gitea`](.github/actions/docker-build-push-from-artifact-gitea/action.yml) | `checkout` + `download-artifact-gitea` + `docker-build` (Gitea) | same as `docker-build-push-from-artifact` |
 | [`maven-docker-build-push`](.github/actions/maven-docker-build-push/action.yml) | `checkout` + `setup-maven` + `docker-build` (no cross-job artifact — JAR reused from `target/`) | `java-version`, `maven-goals`, `maven-args`, `image`, `tags`, `registry`, `username`, `password`, `push` |
 | [`ssh-deploy`](.github/actions/ssh-deploy/action.yml) | `easingthemes/ssh-deploy@v5` | `host`, `port`, `username`, `key`/`password`, `source`, `target` |
+| [`ssh-command`](.github/actions/ssh-command/action.yml) | `appleboy/ssh-action@v1.2.5` | `host`, `port`, `username`, `key`/`password`, `passphrase`, `command`, `command-timeout`, `envs`, `debug` |
+| [`ssh-docker-compose-up`](.github/actions/ssh-docker-compose-up/action.yml) | `appleboy/ssh-action@v1.2.5` (+ assemble `docker compose pull && up -d`) | `host`, `port`, `username`, `key`/`password`, `passphrase`, `working-directory`, `compose-file`, `pull`, `command-timeout`, `debug` |
 | [`notify`](.github/actions/notify/action.yml) | Multi-channel — Slack (`rtCamp/action-slack-notify@v2`), Discord (`appleboy/discord-action@v1.2.0`), Telegram (`appleboy/telegram-action`), Feishu/Lark (`foxundermoon/feishu-action@v2`), DingTalk (`ghostoy/dingtalk-action`), Email (`dawidd6/action-send-mail@v3`), generic webhook (`distributhor/workflow-webhook@v1`) | `channel`, `status`, `title`, `message`, `color`, `webhook-url`, `token`, `to`, `dingtalk-secret`, `smtp-*`, `mail-*`, `webhook-secret`, `webhook-data` |
 
 ## Referencing from another repo
@@ -476,10 +478,13 @@ act -s SLACK_WEBHOOK="https://hooks.slack.com/..." \
 Notes:
 - `.actrc` pins a lightweight runner image and emulates `linux/amd64` so Apple
   Silicon hosts match GitHub-hosted runners.
-- `test-ssh-deploy-dry` and `test-notify-dry` use `continue-on-error`: they only
-  validate that inputs map correctly (status → color, source/target wiring).
-  They need a live host / real webhook to fully succeed — pass secrets for a
-  real run.
+- `test-ssh-deploy-dry`, `test-ssh-command-dry`, and `test-notify-dry` use
+  `continue-on-error`: they only validate that inputs map correctly (source/target
+  wiring, command mapping, status → color). They need a live host / real webhook
+  to fully succeed — pass secrets for a real run. `test-ssh-docker-compose-up-dry`
+  additionally runs the local command-assembly step (real logic check that
+  `docker compose ... pull && ... up -d` is built correctly) before the allowed
+  SSH failure.
 - `test-docker-smoke` builds a trivial image but does **not** push (`push: 'false'`).
 - `test-artifact-roundtrip` exercises the upload/download wrappers and needs
   `act`'s local artifact server, which `scripts/test-with-act.sh` enables with

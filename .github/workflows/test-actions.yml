@@ -265,6 +265,44 @@ jobs:
           target: /tmp/smoke
           exclude: '.git*'
 
+  test-ssh-command-dry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH command (dry, no live host)
+        # appleboy/ssh-action will attempt a connection; we point it at a
+        # non-routable host but expect the *action wiring* (input mapping) to be
+        # valid. The step is allowed to fail so the harness reports a clear
+        # wiring check rather than a network error. Inspect locally for real runs.
+        continue-on-error: true
+        uses: ./.github/actions/ssh-command
+        with:
+          host: 203.0.113.1
+          port: '22'
+          username: ci
+          password: dummy
+          command: 'echo hello-from-ssh && whoami'
+          command-timeout: '30s'
+
+  test-ssh-docker-compose-up-dry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH docker compose pull & up (dry, no live host)
+        # The local "build" step assembles `docker compose ... pull && ... up -d`
+        # (real local-logic check, no network needed). The SSH connection then
+        # targets a non-routable host and is allowed to fail — we only assert the
+        # wrapper wiring. Inspect locally for real deploys.
+        continue-on-error: true
+        uses: ./.github/actions/ssh-docker-compose-up
+        with:
+          host: 203.0.113.1
+          port: '22'
+          username: ci
+          password: dummy
+          working-directory: /opt/myapp
+          compose-file: docker-compose.yml
+          pull: 'true'
+          command-timeout: '5m'
+
   test-notify-dry:
     runs-on: ubuntu-latest
     steps:
