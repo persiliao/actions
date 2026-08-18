@@ -1,0 +1,150 @@
+name: Cache S3 (compatible)
+description: >-
+  S3-compatible build cache (an actions/cache drop-in that stores tarballs in an
+  S3 bucket instead of the platform's native cache service). Because the backend
+  is an external S3 bucket, the SAME action works unchanged on GitHub and Gitea
+  — there is no GitHub-native cache dependency. Uses the `aws` CLI (auto-installed
+  via pip when missing) and gzip tarballs. Two calls are required (composite
+  actions have no post-job hook): one with action=restore at the start, one with
+  action=save at the end (gate the save with `if: steps.<id>.outputs.cache-hit != 'true'`).
+
+inputs:
+  action:
+    description: 'Phase to run: "restore" or "save".'
+    required: true
+  key:
+    description: 'Cache key, e.g. "maven-${{ hashFiles(''**/pom.xml'') }}".'
+    required: true
+  path:
+    description: 'Path(s) to cache. Newline- or comma-separated. Needed for action=save (ignored on restore).'
+    required: false
+    default: ''
+  restore-keys:
+    description: 'Fallback key prefixes (newline-separated). On restore, the newest matching object wins.'
+    required: false
+    default: ''
+  bucket:
+    description: 'S3 bucket name (or bucket/path prefix).'
+    required: true
+  endpoint:
+    description: 'S3-compatible endpoint URL, e.g. "https://s3.amazonaws.com" or "https://minio.example.com". Empty = AWS default.'
+    required: false
+    default: ''
+  region:
+    description: 'AWS region, e.g. "us-east-1". Empty = SDK default.'
+    required: false
+    default: ''
+  aws-access-key-id:
+    description: 'AWS access key id. Defaults to $AWS_ACCESS_KEY_ID (set via configure-aws-credentials or secrets). Empty = use default credential chain.'
+    required: false
+    default: ${{ env.AWS_ACCESS_KEY_ID }}
+  aws-secret-access-key:
+    description: 'AWS secret access key. Defaults to $AWS_SECRET_ACCESS_KEY.'
+    required: false
+    default: ${{ env.AWS_SECRET_ACCESS_KEY }}
+  aws-session-token:
+    description: 'AWS session token (for temporary credentials). Defaults to $AWS_SESSION_TOKEN.'
+    required: false
+    default: ${{ env.AWS_SESSION_TOKEN }}
+
+outputs:
+  cache-hit:
+    description: 'On restore: "true" if the exact key was found, "false" otherwise. Empty on save.'
+    value: ${{ steps.s3-cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: S3 cache (restore/save)
+      id: s3-cache
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        WS="${{ github.workspace }}"
+        ACTION="${{ inputs.action }}"
+        KEY="${{ inputs.key }}"
+        BUCKET="${{ inputs.bucket }}"
+        ENDPOINT="${{ inputs.endpoint }}"
+        REGION="${{ inputs.region }}"
+        PATHS_RAW="${{ inputs.path }}"
+        RESTORE_KEYS="${{ inputs.restore-keys }}"
+
+        # Credentials: only export when provided (avoid clobbering the default chain).
+        [ -n "${{ inputs.aws-access-key-id }}" ] && export AWS_ACCESS_KEY_ID="${{ inputs.aws-access-key-id }}"
+        [ -n "${{ inputs.aws-secret-access-key }}" ] && export AWS_SECRET_ACCESS_KEY="${{ inputs.aws-secret-access-key }}"
+        [ -n "${{ inputs.aws-session-token }}" ] && export AWS_SESSION_TOKEN="${{ inputs.aws-session-token }}"
+        [ -n "$ENDPOINT" ] && export AWS_ENDPOINT_URL="$ENDPOINT"
+        [ -n "$REGION" ] && export AWS_REGION="$REGION"
+
+        # Ensure the aws CLI is available (preinstalled on GitHub ubuntu runners).
+        if ! command -v aws >/dev/null 2>&1; then
+          echo "::notice::aws CLI not found, installing via pip"
+          python3 -m pip install --quiet awscli
+        fi
+
+        EP_FLAG=""
+        [ -n "$ENDPOINT" ] && EP_FLAG="--endpoint-url=$ENDPOINT"
+
+        S3="s3://$BUCKET"
+        CACHE_PREFIX="cache/"
+        OBJ_KEY="$CACHE_PREFIX$KEY.tar.gz"
+
+        norm_paths() {
+          printf '%s' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d'
+        }
+
+        if [ "$ACTION" = "restore" ]; then
+          CACHE_HIT="false"
+          TMP="$(mktemp -d)"
+          ARCHIVE="$TMP/restore.tar.gz"
+          DOWNLOADED=""
+
+          # 1) exact key
+          if aws s3 $EP_FLAG ls "$S3/$OBJ_KEY" >/dev/null 2>&1; then
+            aws s3 $EP_FLAG cp "$S3/$OBJ_KEY" "$ARCHIVE"
+            DOWNLOADED="$OBJ_KEY"
+            CACHE_HIT="true"
+          else
+            # 2) restore-keys: newest object under each prefix wins
+            while IFS= read -r rk; do
+              [ -z "$rk" ] && continue
+              CAND="$(aws s3 $EP_FLAG ls "$S3/$CACHE_PREFIX$rk" 2>/dev/null | sort -k1,2 -r | head -n1 | awk '{print $NF}')"
+              if [ -n "$CAND" ]; then
+                aws s3 $EP_FLAG cp "$S3/$CAND" "$ARCHIVE"
+                DOWNLOADED="$CAND"
+                break
+              fi
+            done <<< "$RESTORE_KEYS"
+          fi
+
+          if [ -n "$DOWNLOADED" ]; then
+            echo "→ restoring from $DOWNLOADED (cache-hit=$CACHE_HIT)"
+            tar -xzf "$ARCHIVE" -C "$WS"
+          else
+            echo "::notice::no S3 cache found for key '$KEY'"
+          fi
+          {
+            echo "cache-hit=$CACHE_HIT"
+          } >> "$GITHUB_OUTPUT"
+
+        elif [ "$ACTION" = "save" ]; then
+          if [ -z "$PATHS_RAW" ]; then
+            echo "::error::path is required when action=save"; exit 1
+          fi
+          TMP="$(mktemp -d)"
+          ARCHIVE="$TMP/save.tar.gz"
+          PARGS=()
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            PARGS+=("$p")
+          done < <(norm_paths "$PATHS_RAW")
+
+          echo "→ creating archive for key $KEY (${#PARGS[@]} path(s))"
+          tar -czf "$ARCHIVE" -C "$WS" "${PARGS[@]}"
+          aws s3 $EP_FLAG cp "$ARCHIVE" "$S3/$OBJ_KEY"
+          echo "::notice::S3 cache saved to $OBJ_KEY"
+
+        else
+          echo "::error::action must be 'restore' or 'save' (got '$ACTION')"; exit 1
+        fi

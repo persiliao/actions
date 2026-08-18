@@ -1,0 +1,69 @@
+name: Cache S3 (Gitea)
+description: >-
+  Gitea entry point for the S3-backed cache. The S3 backend is platform-agnostic
+  (no GitHub-native cache service involved), so this is functionally identical to
+  cache-s3 — it simply delegates to it for naming consistency with this repo's
+  *-gitea action pairs. Use this name on Gitea jobs, cache-s3 on GitHub jobs; both
+  behave the same. Requires the `aws` CLI (auto-installed via pip when missing).
+
+inputs:
+  action:
+    description: 'Phase to run: "restore" or "save".'
+    required: true
+  key:
+    description: 'Cache key, e.g. "maven-${{ hashFiles(''**/pom.xml'') }}".'
+    required: true
+  path:
+    description: 'Path(s) to cache. Newline- or comma-separated. Needed for action=save (ignored on restore).'
+    required: false
+    default: ''
+  restore-keys:
+    description: 'Fallback key prefixes (newline-separated). On restore, the newest matching object wins.'
+    required: false
+    default: ''
+  bucket:
+    description: 'S3 bucket name (or bucket/path prefix).'
+    required: true
+  endpoint:
+    description: 'S3-compatible endpoint URL, e.g. "https://minio.example.com". Empty = AWS default.'
+    required: false
+    default: ''
+  region:
+    description: 'AWS region, e.g. "us-east-1". Empty = SDK default.'
+    required: false
+    default: ''
+  aws-access-key-id:
+    description: 'AWS access key id. Defaults to $AWS_ACCESS_KEY_ID. Empty = default credential chain.'
+    required: false
+    default: ${{ env.AWS_ACCESS_KEY_ID }}
+  aws-secret-access-key:
+    description: 'AWS secret access key. Defaults to $AWS_SECRET_ACCESS_KEY.'
+    required: false
+    default: ${{ env.AWS_SECRET_ACCESS_KEY }}
+  aws-session-token:
+    description: 'AWS session token. Defaults to $AWS_SESSION_TOKEN.'
+    required: false
+    default: ${{ env.AWS_SESSION_TOKEN }}
+
+outputs:
+  cache-hit:
+    description: 'On restore: "true" if the exact key was found. Empty on save.'
+    value: ${{ steps.s3-cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Cache S3 (delegate to cache-s3)
+      id: s3-cache
+      uses: ./.github/actions/cache-s3
+      with:
+        action: ${{ inputs.action }}
+        key: ${{ inputs.key }}
+        path: ${{ inputs.path }}
+        restore-keys: ${{ inputs.restore-keys }}
+        bucket: ${{ inputs.bucket }}
+        endpoint: ${{ inputs.endpoint }}
+        region: ${{ inputs.region }}
+        aws-access-key-id: ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        aws-session-token: ${{ inputs.aws-session-token }}
