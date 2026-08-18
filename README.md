@@ -19,6 +19,7 @@ defaults, so downstream CI stays consistent.
 | [`setup-python`](.github/actions/setup-python/action.yml) | `actions/setup-python@v5` | `python-version`, `cache`, `architecture` |
 | [`setup-java`](.github/actions/setup-java/action.yml) | `actions/setup-java@v5` | `java-version`, `distribution`, `cache`, `server-id` |
 | [`setup-maven`](.github/actions/setup-maven/action.yml) | `actions/setup-java@v5` (cache=maven) + `stCarolas/setup-maven@v4` + `s4u/maven-settings-action@v3.1.0` | `goals`, `profiles`, `maven-version`, `servers`, `mirrors` |
+| [`maven-install-local`](.github/actions/maven-install-local/action.yml) | `setup-maven` (optional) + `mvn install:install-file` | `jar-file`, `pom-file`, `group-id`, `artifact-id`, `version`, `packaging`, `classifier`, `generate-pom`, `local-repo`, `setup-maven` |
 | [`setup-gradle`](.github/actions/setup-gradle/action.yml) | `gradle/actions/setup-gradle@v4` | `gradle-version`, `arguments`, `cache-cleanup` |
 | [`docker-build`](.github/actions/docker-build/action.yml) | `docker/login-action@v3` + `docker/build-push-action@v6` | `image`, `tags`, `registry`, `username`, `password`, `push`, `platforms` |
 | [`upload-artifact`](.github/actions/upload-artifact/action.yml) | `actions/upload-artifact@v4` (GitHub) | `name`, `path`, `if-no-files-found`, `retention-days`, `overwrite` |

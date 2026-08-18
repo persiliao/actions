@@ -1,0 +1,134 @@
+name: Maven Install Local JAR (wrapped)
+description: >-
+  Install a local JAR into the Maven local repository (~/.m2) using
+  `mvn install:install-file`, so subsequent builds can resolve it as a normal
+  dependency. Accepts either a pom.xml (pom-file) or explicit
+  group-id/artifact-id/version. Self-contained: optionally sets up Java + Maven
+  first via the repo's setup-maven wrapper. GitHub + Gitea compatible
+  (Gitea must allow fetching GitHub actions for the setup-maven step).
+
+inputs:
+  # What to install
+  jar-file:
+    description: 'Path to the JAR to install, e.g. "lib/foo.jar" or "${{ github.workspace }}/target/foo.jar".'
+    required: true
+  pom-file:
+    description: 'Path to a pom.xml describing the artifact. When set, group-id/artifact-id/version are derived from it.'
+    required: false
+    default: ''
+  group-id:
+    description: 'Maven groupId. Required when pom-file is empty.'
+    required: false
+    default: ''
+  artifact-id:
+    description: 'Maven artifactId. Required when pom-file is empty.'
+    required: false
+    default: ''
+  version:
+    description: 'Maven version. Used when pom-file is empty.'
+    required: false
+    default: '1.0.0'
+  packaging:
+    description: 'Packaging type, e.g. "jar", "war", "bundle". Used when pom-file is empty.'
+    required: false
+    default: 'jar'
+  classifier:
+    description: 'Optional classifier, e.g. "sources", "javadoc".'
+    required: false
+    default: ''
+  generate-pom:
+    description: 'Generate a minimal pom when pom-file is empty ("true"/"false").'
+    required: false
+    default: 'true'
+  local-repo:
+    description: 'Install into a custom local repository path instead of ~/.m2 (sets -DlocalRepositoryPath).'
+    required: false
+    default: ''
+
+  # Toolchain
+  setup-maven:
+    description: 'Run setup-maven first to install Java + Maven ("true"/"false"). Set "false" if the job already provides mvn.'
+    required: false
+    default: 'true'
+  java-version:
+    description: 'Java version passed to setup-maven when setup-maven is "true".'
+    required: false
+    default: '17'
+  distribution:
+    description: 'JDK distribution passed to setup-maven when setup-maven is "true".'
+    required: false
+    default: 'temurin'
+  maven-version:
+    description: 'Maven version passed to setup-maven when setup-maven is "true".'
+    required: false
+    default: '3.9.9'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Java + Maven
+      if: ${{ inputs.setup-maven == 'true' }}
+      uses: ./.github/actions/setup-maven
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: ${{ inputs.distribution }}
+        maven-version: ${{ inputs.maven-version }}
+        goals: '--version'
+        cache: ''
+
+    - name: Install local JAR
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        MVN="mvn"
+        # Mirror setup-maven's defensive PATH fallback: stCarolas/setup-maven may
+        # not propagate GITHUB_PATH into this composite step on some runners.
+        if ! command -v mvn >/dev/null 2>&1; then
+          MAVEN_BIN=$(ls -d "$RUNNER_TOOL_CACHE"/maven/*/x64/bin 2>/dev/null | sort -V | tail -n1)
+          [ -n "$MAVEN_BIN" ] && export PATH="$MAVEN_BIN:$PATH"
+        fi
+        if ! command -v mvn >/dev/null 2>&1; then
+          echo "::error::mvn not found on PATH; set setup-maven=true (default) or install Maven in the job first"
+          exit 1
+        fi
+
+        JAR="${{ inputs.jar-file }}"
+        if [ -z "$JAR" ]; then
+          echo "::error::jar-file is required"; exit 1
+        fi
+        if [ ! -f "$JAR" ]; then
+          echo "::error::jar-file not found: $JAR"; exit 1
+        fi
+
+        ARGS=("install:install-file" "-B" "-Dfile=$JAR")
+
+        if [ -n "${{ inputs.pom-file }}" ]; then
+          POM="${{ inputs.pom-file }}"
+          if [ ! -f "$POM" ]; then
+            echo "::error::pom-file not found: $POM"; exit 1
+          fi
+          ARGS+=("-DpomFile=$POM")
+        else
+          G="${{ inputs.group-id }}"
+          A="${{ inputs.artifact-id }}"
+          if [ -z "$G" ] || [ -z "$A" ]; then
+            echo "::error::group-id and artifact-id are required when pom-file is empty"
+            exit 1
+          fi
+          ARGS+=("-DgroupId=$G" "-DartifactId=$A" "-Dversion=${{ inputs.version }}")
+          ARGS+=("-Dpackaging=${{ inputs.packaging }}")
+          if [ "${{ inputs.generate-pom }}" = "true" ]; then
+            ARGS+=("-DgeneratePom=true")
+          fi
+        fi
+
+        if [ -n "${{ inputs.classifier }}" ]; then
+          ARGS+=("-Dclassifier=${{ inputs.classifier }}")
+        fi
+        if [ -n "${{ inputs.local-repo }}" ]; then
+          ARGS+=("-DlocalRepositoryPath=${{ inputs.local-repo }}")
+        fi
+
+        echo "→ mvn ${ARGS[*]}"
+        $MVN "${ARGS[@]}"
