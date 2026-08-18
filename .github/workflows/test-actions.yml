@@ -190,6 +190,59 @@ jobs:
         run: |
           test -f target/demo-1.0.0.jar && echo "jar present: $(ls -1 target/*.jar)"
 
+  # End-to-end exercise of the S3-compatible cache (cache-s3). Saves a file to a
+  # real S3-compatible store (MinIO's public play.min.io demo endpoint) in one
+  # job, then restores it in a second job — proving save + restore (cache-hit)
+  # work without the GitHub/Gitea native cache service. The SAME wiring targets
+  # a private MinIO / Alibaba OSS / Tencent COS by swapping endpoint + creds.
+  # Needs network egress (like test-maven-docker). The save happens in a `post`
+  # step (job end), so the round-trip spans two jobs.
+  test-cache-s3-save:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scaffold a file to cache
+        run: |
+          mkdir -p cache-demo
+          echo "cached-at-$(date +%s)" > cache-demo/payload.txt
+          echo "content before save:"; cat cache-demo/payload.txt
+
+      - name: Save to S3-compatible cache (cache-s3)
+        id: save
+        uses: ./.github/actions/cache-s3
+        with:
+          key: cache-s3-e2e-${{ github.run_id }}-${{ github.sha }}
+          path: cache-demo
+          bucket: test
+          endpoint: play.min.io
+          region: us-east-1
+          access-key: Q3AM3UQ867SPQQA43P2F
+          secret-key: zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG
+
+      - name: Assert first run is a miss (nothing cached yet)
+        run: test "${{ steps.save.outputs.cache-hit }}" = "false"
+
+  test-cache-s3-restore:
+    needs: test-cache-s3-save
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore from S3-compatible cache (cache-s3)
+        id: restore
+        uses: ./.github/actions/cache-s3
+        with:
+          key: cache-s3-e2e-${{ github.run_id }}-${{ github.sha }}
+          path: cache-demo
+          bucket: test
+          endpoint: play.min.io
+          region: us-east-1
+          access-key: Q3AM3UQ867SPQQA43P2F
+          secret-key: zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG
+
+      - name: Assert restore hit and the file came back
+        run: |
+          test "${{ steps.restore.outputs.cache-hit }}" = "true"
+          test -f cache-demo/payload.txt
+          echo "restored content:"; cat cache-demo/payload.txt
+
   test-ssh-deploy-dry:
     runs-on: ubuntu-latest
     steps:

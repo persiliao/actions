@@ -487,6 +487,14 @@ Notes:
   `maven-docker-build-push` orchestrator end-to-end (no artifact server
   needed — the JAR is reused from `target/`); it pulls Maven plugins and a base
   image from the network, so allow outbound access.
+- `test-cache-s3-save` + `test-cache-s3-restore` exercise the `cache-s3` wrapper
+  end-to-end against a real S3-compatible store (MinIO's public `play.min.io`
+  demo endpoint): the first job saves a file, the second restores it and asserts
+  `cache-hit` is `true`. This proves save + restore work without the GitHub/Gitea
+  native cache service, and the same wiring targets a private MinIO / Alibaba
+  OSS / Tencent COS by swapping `endpoint` + credentials. Needs network egress
+  to `play.min.io` (like `test-maven-docker`); `cache-s3-gitea` delegates to
+  `cache-s3` and is covered by the same test.
 - **Local memory caveat:** the `setup-gradle` job pulls the heavy Gradle
   distribution and may be OOM-killed under a memory-constrained local Docker
   VM (e.g. OrbStack's default 8 GiB) when run via `act`. The wrapper itself is
