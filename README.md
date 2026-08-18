@@ -20,8 +20,8 @@ defaults, so downstream CI stays consistent.
 | [`setup-java`](.github/actions/setup-java/action.yml) | `actions/setup-java@v5` | `java-version`, `distribution`, `cache`, `server-id` |
 | [`setup-maven`](.github/actions/setup-maven/action.yml) | `actions/setup-java@v5` (cache=maven) + `stCarolas/setup-maven@v4` + `s4u/maven-settings-action@v3.1.0` | `goals`, `profiles`, `maven-version`, `servers`, `mirrors` |
 | [`maven-install-local`](.github/actions/maven-install-local/action.yml) | `setup-maven` (optional) + `mvn install:install-file` | `jar-file`, `pom-file`, `group-id`, `artifact-id`, `version`, `packaging`, `classifier`, `generate-pom`, `local-repo`, `setup-maven` |
-| [`cache-s3`](.github/actions/cache-s3/action.yml) | `aws` CLI (auto-installed) + `aws s3 cp` of a gzip tarball | `action` (restore/save), `key`, `path`, `restore-keys`, `bucket`, `endpoint`, `region`, `aws-access-key-id`, `aws-secret-access-key`, `aws-session-token` |
-| [`cache-s3-gitea`](.github/actions/cache-s3-gitea/action.yml) | Delegates to `cache-s3` (S3 backend is platform-agnostic — identical logic) | same as `cache-s3` |
+| [`cache-s3`](.github/actions/cache-s3/action.yml) | `productboard/actions-cache@v1` (drop-in for `actions/cache`, S3 backend) — no custom shell | `key`, `path`, `restore-keys`, `bucket`, `endpoint`, `region`, `port`, `insecure`, `access-key`, `secret-key`, `session-token`, `use-fallback`, `read-only`, `force-save`, `retry`, `retry-count`, `lookup-only` |
+| [`cache-s3-gitea`](.github/actions/cache-s3-gitea/action.yml) | Delegates to `cache-s3` (S3 backend is platform-agnostic — identical logic, works on Gitea too) | same as `cache-s3` |
 | [`setup-gradle`](.github/actions/setup-gradle/action.yml) | `gradle/actions/setup-gradle@v4` | `gradle-version`, `arguments`, `cache-cleanup` |
 | [`docker-build`](.github/actions/docker-build/action.yml) | `docker/login-action@v3` + `docker/build-push-action@v6` | `image`, `tags`, `registry`, `username`, `password`, `push`, `platforms` |
 | [`upload-artifact`](.github/actions/upload-artifact/action.yml) | `actions/upload-artifact@v4` (GitHub) | `name`, `path`, `if-no-files-found`, `retention-days`, `overwrite` |
@@ -368,6 +368,84 @@ jobs:
 Dockerfile / build context), then downloads the artifact, then builds and
 pushes. Set `checkout: 'false'` on either building block (or the orchestrator)
 only when the repo is already present in the workspace.
+
+## S3-compatible cache (private MinIO / Alibaba OSS / etc.)
+
+`cache-s3` (and `cache-s3-gitea`) wrap
+[`productboard/actions-cache`](https://github.com/productboard/actions-cache) —
+a drop-in for `actions/cache` whose backend is any S3-compatible bucket instead
+of the platform-native cache service. Declare `key` + `path` once, like
+`actions/cache`; restore happens at job start and save happens automatically at
+job end (a `post` step). Because the store is an external bucket, the same action
+works on both GitHub and Gitea unchanged. `use-fallback` defaults to `false`, so
+it never depends on the GitHub/Gitea cache service.
+
+**AWS S3 (default):**
+
+```yaml
+- uses: persiliao/actions/cache-s3@main
+  with:
+    key: maven-${{ hashFiles('**/pom.xml') }}
+    path: ~/.m2/repository
+    restore-keys: maven-
+    bucket: my-ci-cache
+    region: us-east-1
+    access-key: ${{ secrets.AWS_ACCESS_KEY_ID }}
+    secret-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+```
+
+**Private MinIO** (self-hosted, http, custom port — note `endpoint`, `port`,
+`insecure`, and `accessKey`/`secretKey`):
+
+```yaml
+- uses: persiliao/actions/cache-s3@main
+  with:
+    key: maven-${{ hashFiles('**/pom.xml') }}
+    path: ~/.m2/repository
+    restore-keys: maven-
+    bucket: ci-cache
+    endpoint: minio.internal.example.com
+    port: '9000'
+    insecure: 'true'            # http (omit / set 'false' for https)
+    access-key: ${{ secrets.MINIO_ACCESS_KEY }}
+    secret-key: ${{ secrets.MINIO_SECRET_KEY }}
+```
+
+**Alibaba Cloud OSS** (S3-compatible endpoint + region):
+
+```yaml
+- uses: persiliao/actions/cache-s3@main
+  with:
+    key: maven-${{ hashFiles('**/pom.xml') }}
+    path: ~/.m2/repository
+    restore-keys: maven-
+    bucket: my-oss-cache
+    endpoint: oss-cn-hangzhou.aliyuncs.com
+    region: oss-cn-hangzhou
+    access-key: ${{ secrets.OSS_ACCESS_KEY }}
+    secret-key: ${{ secrets.OSS_SECRET_KEY }}
+```
+
+**On Gitea** use the `-gitea` name (identical wiring). The upstream is a Node.js
+action with a `post` save step; Gitea's `act_runner` runs it the same way — make
+sure the runner image bundles a Node runtime.
+
+```yaml
+- uses: persiliao/actions/cache-s3-gitea@main
+  with:
+    key: maven-${{ hashFiles('**/pom.xml') }}
+    path: ~/.m2/repository
+    bucket: ci-cache
+    endpoint: minio.internal.example.com
+    port: '9000'
+    insecure: 'true'
+    access-key: ${{ secrets.MINIO_ACCESS_KEY }}
+    secret-key: ${{ secrets.MINIO_SECRET_KEY }}
+```
+
+Also exposed: `read-only` (restore only), `force-save` (overwrite even on a hit),
+`use-exact-key-match`, `lookup-only`, and `retry`/`retry-count` — see the inputs
+list in the table above.
 
 ## Pinning for production
 

@@ -1,150 +1,123 @@
 name: Cache S3 (compatible)
 description: >-
-  S3-compatible build cache (an actions/cache drop-in that stores tarballs in an
-  S3 bucket instead of the platform's native cache service). Because the backend
-  is an external S3 bucket, the SAME action works unchanged on GitHub and Gitea
-  — there is no GitHub-native cache dependency. Uses the `aws` CLI (auto-installed
-  via pip when missing) and gzip tarballs. Two calls are required (composite
-  actions have no post-job hook): one with action=restore at the start, one with
-  action=save at the end (gate the save with `if: steps.<id>.outputs.cache-hit != 'true'`).
+  S3-compatible build cache. A drop-in replacement for actions/cache that stores
+  cache archives in ANY S3-compatible object store (AWS S3, MinIO, Alibaba Cloud
+  OSS, Tencent COS, Wasabi, etc.) instead of the platform-native cache service.
+  Wraps the existing productboard/actions-cache action (no custom shell). Single
+  call: declare `key` + `path` like actions/cache; restore runs at job start and
+  save runs automatically at job end (post step). Because the backend is an external
+  S3 bucket, the SAME action works unchanged on GitHub and Gitea. use-fallback
+  defaults to false so it never depends on the GitHub/Gitea cache service.
 
 inputs:
-  action:
-    description: 'Phase to run: "restore" or "save".'
-    required: true
   key:
-    description: 'Cache key, e.g. "maven-${{ hashFiles(''**/pom.xml'') }}".'
+    description: 'Cache key, e.g. "maven-${{ hashFiles(''**/pom.xml'') }}". Same semantics as actions/cache.'
     required: true
   path:
-    description: 'Path(s) to cache. Newline- or comma-separated. Needed for action=save (ignored on restore).'
-    required: false
-    default: ''
+    description: 'Path(s) to cache. Newline- or comma-separated. Same as actions/cache.'
+    required: true
   restore-keys:
-    description: 'Fallback key prefixes (newline-separated). On restore, the newest matching object wins.'
+    description: 'Fallback key prefixes (newline-separated), like actions/cache restore-keys.'
     required: false
     default: ''
   bucket:
-    description: 'S3 bucket name (or bucket/path prefix).'
+    description: 'S3 / MinIO / OSS bucket name.'
     required: true
   endpoint:
-    description: 'S3-compatible endpoint URL, e.g. "https://s3.amazonaws.com" or "https://minio.example.com". Empty = AWS default.'
+    description: 'S3-compatible endpoint, e.g. "s3.amazonaws.com", "play.min.io", "oss-cn-hangzhou.aliyuncs.com". Default = AWS S3.'
     required: false
-    default: ''
+    default: s3.amazonaws.com
   region:
-    description: 'AWS region, e.g. "us-east-1". Empty = SDK default.'
+    description: 'Region, e.g. "us-east-1" or "oss-cn-hangzhou". Empty = SDK default.'
     required: false
     default: ''
-  aws-access-key-id:
-    description: 'AWS access key id. Defaults to $AWS_ACCESS_KEY_ID (set via configure-aws-credentials or secrets). Empty = use default credential chain.'
+  port:
+    description: 'Custom port (mainly for MinIO self-hosted), e.g. "9000". Empty = default.'
+    required: false
+    default: ''
+  insecure:
+    description: 'Use insecure http (instead of https). For private http deployments. Default false.'
+    required: false
+    default: 'false'
+  access-key:
+    description: 'S3 / MinIO / OSS access key. Falls back to $AWS_ACCESS_KEY_ID when empty.'
     required: false
     default: ${{ env.AWS_ACCESS_KEY_ID }}
-  aws-secret-access-key:
-    description: 'AWS secret access key. Defaults to $AWS_SECRET_ACCESS_KEY.'
+  secret-key:
+    description: 'S3 / MinIO / OSS secret key. Falls back to $AWS_SECRET_ACCESS_KEY when empty.'
     required: false
     default: ${{ env.AWS_SECRET_ACCESS_KEY }}
-  aws-session-token:
-    description: 'AWS session token (for temporary credentials). Defaults to $AWS_SESSION_TOKEN.'
+  session-token:
+    description: 'Session token for temporary credentials. Falls back to $AWS_SESSION_TOKEN when empty.'
     required: false
     default: ${{ env.AWS_SESSION_TOKEN }}
+  use-fallback:
+    description: 'Use the platform-native actions/cache as a fallback when S3 fails. Default false (S3 only).'
+    required: false
+    default: 'false'
+  use-exact-key-match:
+    description: 'Do not fall back to restore-keys on a miss. Default false.'
+    required: false
+    default: 'false'
+  use-repository-prefix:
+    description: 'Prefix key + restore-keys with the repository name. Default false.'
+    required: false
+    default: 'false'
+  read-only:
+    description: 'Read-only mode: restore but never save. Default false.'
+    required: false
+    default: 'false'
+  force-save:
+    description: 'Save even when the primary key matched (overwrites). Default false.'
+    required: false
+    default: 'false'
+  retry:
+    description: 'Retry S3 operations on failure. Default false.'
+    required: false
+    default: 'false'
+  retry-count:
+    description: 'Number of S3 operation retries. Default 3.'
+    required: false
+    default: '3'
+  lookup-only:
+    description: 'Only check for a hit, do not download/extract. Default false.'
+    required: false
+    default: 'false'
 
 outputs:
   cache-hit:
-    description: 'On restore: "true" if the exact key was found, "false" otherwise. Empty on save.'
+    description: 'true if an exact match for the primary key was found.'
     value: ${{ steps.s3-cache.outputs.cache-hit }}
+  cache-size:
+    description: 'Size in bytes of the matched cache object, if any.'
+    value: ${{ steps.s3-cache.outputs.cache-size }}
+  cache-matched-key:
+    description: 'The key of the matched cache object, if any.'
+    value: ${{ steps.s3-cache.outputs.cache-matched-key }}
 
 runs:
   using: composite
   steps:
-    - name: S3 cache (restore/save)
+    - name: Restore/Save cache to S3-compatible storage
       id: s3-cache
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        WS="${{ github.workspace }}"
-        ACTION="${{ inputs.action }}"
-        KEY="${{ inputs.key }}"
-        BUCKET="${{ inputs.bucket }}"
-        ENDPOINT="${{ inputs.endpoint }}"
-        REGION="${{ inputs.region }}"
-        PATHS_RAW="${{ inputs.path }}"
-        RESTORE_KEYS="${{ inputs.restore-keys }}"
-
-        # Credentials: only export when provided (avoid clobbering the default chain).
-        [ -n "${{ inputs.aws-access-key-id }}" ] && export AWS_ACCESS_KEY_ID="${{ inputs.aws-access-key-id }}"
-        [ -n "${{ inputs.aws-secret-access-key }}" ] && export AWS_SECRET_ACCESS_KEY="${{ inputs.aws-secret-access-key }}"
-        [ -n "${{ inputs.aws-session-token }}" ] && export AWS_SESSION_TOKEN="${{ inputs.aws-session-token }}"
-        [ -n "$ENDPOINT" ] && export AWS_ENDPOINT_URL="$ENDPOINT"
-        [ -n "$REGION" ] && export AWS_REGION="$REGION"
-
-        # Ensure the aws CLI is available (preinstalled on GitHub ubuntu runners).
-        if ! command -v aws >/dev/null 2>&1; then
-          echo "::notice::aws CLI not found, installing via pip"
-          python3 -m pip install --quiet awscli
-        fi
-
-        EP_FLAG=""
-        [ -n "$ENDPOINT" ] && EP_FLAG="--endpoint-url=$ENDPOINT"
-
-        S3="s3://$BUCKET"
-        CACHE_PREFIX="cache/"
-        OBJ_KEY="$CACHE_PREFIX$KEY.tar.gz"
-
-        norm_paths() {
-          printf '%s' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d'
-        }
-
-        if [ "$ACTION" = "restore" ]; then
-          CACHE_HIT="false"
-          TMP="$(mktemp -d)"
-          ARCHIVE="$TMP/restore.tar.gz"
-          DOWNLOADED=""
-
-          # 1) exact key
-          if aws s3 $EP_FLAG ls "$S3/$OBJ_KEY" >/dev/null 2>&1; then
-            aws s3 $EP_FLAG cp "$S3/$OBJ_KEY" "$ARCHIVE"
-            DOWNLOADED="$OBJ_KEY"
-            CACHE_HIT="true"
-          else
-            # 2) restore-keys: newest object under each prefix wins
-            while IFS= read -r rk; do
-              [ -z "$rk" ] && continue
-              CAND="$(aws s3 $EP_FLAG ls "$S3/$CACHE_PREFIX$rk" 2>/dev/null | sort -k1,2 -r | head -n1 | awk '{print $NF}')"
-              if [ -n "$CAND" ]; then
-                aws s3 $EP_FLAG cp "$S3/$CAND" "$ARCHIVE"
-                DOWNLOADED="$CAND"
-                break
-              fi
-            done <<< "$RESTORE_KEYS"
-          fi
-
-          if [ -n "$DOWNLOADED" ]; then
-            echo "→ restoring from $DOWNLOADED (cache-hit=$CACHE_HIT)"
-            tar -xzf "$ARCHIVE" -C "$WS"
-          else
-            echo "::notice::no S3 cache found for key '$KEY'"
-          fi
-          {
-            echo "cache-hit=$CACHE_HIT"
-          } >> "$GITHUB_OUTPUT"
-
-        elif [ "$ACTION" = "save" ]; then
-          if [ -z "$PATHS_RAW" ]; then
-            echo "::error::path is required when action=save"; exit 1
-          fi
-          TMP="$(mktemp -d)"
-          ARCHIVE="$TMP/save.tar.gz"
-          PARGS=()
-          while IFS= read -r p; do
-            [ -z "$p" ] && continue
-            PARGS+=("$p")
-          done < <(norm_paths "$PATHS_RAW")
-
-          echo "→ creating archive for key $KEY (${#PARGS[@]} path(s))"
-          tar -czf "$ARCHIVE" -C "$WS" "${PARGS[@]}"
-          aws s3 $EP_FLAG cp "$ARCHIVE" "$S3/$OBJ_KEY"
-          echo "::notice::S3 cache saved to $OBJ_KEY"
-
-        else
-          echo "::error::action must be 'restore' or 'save' (got '$ACTION')"; exit 1
-        fi
+      uses: productboard/actions-cache@v1
+      with:
+        key: ${{ inputs.key }}
+        path: ${{ inputs.path }}
+        restore-keys: ${{ inputs.restore-keys }}
+        bucket: ${{ inputs.bucket }}
+        endpoint: ${{ inputs.endpoint }}
+        region: ${{ inputs.region }}
+        port: ${{ inputs.port }}
+        insecure: ${{ inputs.insecure }}
+        accessKey: ${{ inputs.access-key }}
+        secretKey: ${{ inputs.secret-key }}
+        sessionToken: ${{ inputs.session-token }}
+        use-fallback: ${{ inputs.use-fallback }}
+        use-exact-key-match: ${{ inputs.use-exact-key-match }}
+        use-repository-prefix: ${{ inputs.use-repository-prefix }}
+        read-only: ${{ inputs.read-only }}
+        force-save: ${{ inputs.force-save }}
+        retry: ${{ inputs.retry }}
+        retry-count: ${{ inputs.retry-count }}
+        lookup-only: ${{ inputs.lookup-only }}

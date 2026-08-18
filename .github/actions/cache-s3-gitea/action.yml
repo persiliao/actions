@@ -1,54 +1,98 @@
 name: Cache S3 (Gitea)
 description: >-
-  Gitea entry point for the S3-backed cache. The S3 backend is platform-agnostic
-  (no GitHub-native cache service involved), so this is functionally identical to
-  cache-s3 — it simply delegates to it for naming consistency with this repo's
-  *-gitea action pairs. Use this name on Gitea jobs, cache-s3 on GitHub jobs; both
-  behave the same. Requires the `aws` CLI (auto-installed via pip when missing).
+  Gitea entry point for the S3-compatible build cache. Backed by an external S3
+  bucket (no GitHub/Gitea native cache service involved), so it behaves identically
+  to cache-s3 on GitHub — this name exists only for this repo's *-gitea naming
+  convention. Wraps the existing productboard/actions-cache action (no custom
+  shell). Use this name on Gitea jobs, cache-s3 on GitHub jobs; both call the same
+  S3 backend. Supports private S3-compatible OSS (MinIO, Alibaba OSS, etc.) via the
+  endpoint / insecure / port / accessKey / secretKey inputs.
 
 inputs:
-  action:
-    description: 'Phase to run: "restore" or "save".'
-    required: true
   key:
-    description: 'Cache key, e.g. "maven-${{ hashFiles(''**/pom.xml'') }}".'
+    description: 'Cache key, e.g. "maven-${{ hashFiles(''**/pom.xml'') }}". Same semantics as actions/cache.'
     required: true
   path:
-    description: 'Path(s) to cache. Newline- or comma-separated. Needed for action=save (ignored on restore).'
-    required: false
-    default: ''
+    description: 'Path(s) to cache. Newline- or comma-separated. Same as actions/cache.'
+    required: true
   restore-keys:
-    description: 'Fallback key prefixes (newline-separated). On restore, the newest matching object wins.'
+    description: 'Fallback key prefixes (newline-separated), like actions/cache restore-keys.'
     required: false
     default: ''
   bucket:
-    description: 'S3 bucket name (or bucket/path prefix).'
+    description: 'S3 / MinIO / OSS bucket name.'
     required: true
   endpoint:
-    description: 'S3-compatible endpoint URL, e.g. "https://minio.example.com". Empty = AWS default.'
+    description: 'S3-compatible endpoint, e.g. "play.min.io" or "oss-cn-hangzhou.aliyuncs.com". Default = AWS S3.'
     required: false
-    default: ''
+    default: s3.amazonaws.com
   region:
-    description: 'AWS region, e.g. "us-east-1". Empty = SDK default.'
+    description: 'Region, e.g. "oss-cn-hangzhou". Empty = SDK default.'
     required: false
     default: ''
-  aws-access-key-id:
-    description: 'AWS access key id. Defaults to $AWS_ACCESS_KEY_ID. Empty = default credential chain.'
+  port:
+    description: 'Custom port (mainly for MinIO self-hosted), e.g. "9000". Empty = default.'
+    required: false
+    default: ''
+  insecure:
+    description: 'Use insecure http (instead of https). For private http deployments. Default false.'
+    required: false
+    default: 'false'
+  access-key:
+    description: 'S3 / MinIO / OSS access key. Falls back to $AWS_ACCESS_KEY_ID when empty.'
     required: false
     default: ${{ env.AWS_ACCESS_KEY_ID }}
-  aws-secret-access-key:
-    description: 'AWS secret access key. Defaults to $AWS_SECRET_ACCESS_KEY.'
+  secret-key:
+    description: 'S3 / MinIO / OSS secret key. Falls back to $AWS_SECRET_ACCESS_KEY when empty.'
     required: false
     default: ${{ env.AWS_SECRET_ACCESS_KEY }}
-  aws-session-token:
-    description: 'AWS session token. Defaults to $AWS_SESSION_TOKEN.'
+  session-token:
+    description: 'Session token for temporary credentials. Falls back to $AWS_SESSION_TOKEN when empty.'
     required: false
     default: ${{ env.AWS_SESSION_TOKEN }}
+  use-fallback:
+    description: 'Use the platform-native actions/cache as a fallback when S3 fails. Default false (S3 only).'
+    required: false
+    default: 'false'
+  use-exact-key-match:
+    description: 'Do not fall back to restore-keys on a miss. Default false.'
+    required: false
+    default: 'false'
+  use-repository-prefix:
+    description: 'Prefix key + restore-keys with the repository name. Default false.'
+    required: false
+    default: 'false'
+  read-only:
+    description: 'Read-only mode: restore but never save. Default false.'
+    required: false
+    default: 'false'
+  force-save:
+    description: 'Save even when the primary key matched (overwrites). Default false.'
+    required: false
+    default: 'false'
+  retry:
+    description: 'Retry S3 operations on failure. Default false.'
+    required: false
+    default: 'false'
+  retry-count:
+    description: 'Number of S3 operation retries. Default 3.'
+    required: false
+    default: '3'
+  lookup-only:
+    description: 'Only check for a hit, do not download/extract. Default false.'
+    required: false
+    default: 'false'
 
 outputs:
   cache-hit:
-    description: 'On restore: "true" if the exact key was found. Empty on save.'
+    description: 'true if an exact match for the primary key was found.'
     value: ${{ steps.s3-cache.outputs.cache-hit }}
+  cache-size:
+    description: 'Size in bytes of the matched cache object, if any.'
+    value: ${{ steps.s3-cache.outputs.cache-size }}
+  cache-matched-key:
+    description: 'The key of the matched cache object, if any.'
+    value: ${{ steps.s3-cache.outputs.cache-matched-key }}
 
 runs:
   using: composite
@@ -57,13 +101,22 @@ runs:
       id: s3-cache
       uses: ./.github/actions/cache-s3
       with:
-        action: ${{ inputs.action }}
         key: ${{ inputs.key }}
         path: ${{ inputs.path }}
         restore-keys: ${{ inputs.restore-keys }}
         bucket: ${{ inputs.bucket }}
         endpoint: ${{ inputs.endpoint }}
         region: ${{ inputs.region }}
-        aws-access-key-id: ${{ inputs.aws-access-key-id }}
-        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
-        aws-session-token: ${{ inputs.aws-session-token }}
+        port: ${{ inputs.port }}
+        insecure: ${{ inputs.insecure }}
+        access-key: ${{ inputs.access-key }}
+        secret-key: ${{ inputs.secret-key }}
+        session-token: ${{ inputs.session-token }}
+        use-fallback: ${{ inputs.use-fallback }}
+        use-exact-key-match: ${{ inputs.use-exact-key-match }}
+        use-repository-prefix: ${{ inputs.use-repository-prefix }}
+        read-only: ${{ inputs.read-only }}
+        force-save: ${{ inputs.force-save }}
+        retry: ${{ inputs.retry }}
+        retry-count: ${{ inputs.retry-count }}
+        lookup-only: ${{ inputs.lookup-only }}
