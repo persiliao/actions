@@ -1,0 +1,36 @@
+name: Download Artifact — Gitea (wrapped)
+description: >-
+  Gitea-compatible download using christopherHX/gitea-download-artifact@v4, a
+  copy of actions/download-artifact@v4 with the non-GitHub-server check
+  removed. Use this instead of download-artifact on Gitea, because
+  actions/download-artifact@v4 refuses any non-github.com server. Same typed
+  inputs as the GitHub wrapper.
+
+inputs:
+  name:
+    description: 'Artifact name to download.'
+    required: false
+    default: 'artifact'
+  path:
+    description: 'Directory to download into (default current directory).'
+    required: false
+    default: '.'
+  merge-multiple:
+    description: 'Merge multiple artifacts with the same name into one directory ("true"/"false").'
+    required: false
+    default: 'false'
+  github-token:
+    description: 'Token for downloading from another repository (empty = job token).'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Download artifact (Gitea)
+      uses: christopherHX/gitea-download-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        merge-multiple: ${{ inputs.merge-multiple }}
+        github-token: ${{ inputs.github-token != '' && inputs.github-token || '' }}

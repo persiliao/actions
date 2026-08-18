@@ -1,0 +1,48 @@
+name: Setup pnpm (wrapped)
+description: >-
+  Install the pnpm package manager via the official pnpm/action-setup action.
+  Pair with setup-node (cache: "pnpm") to enable dependency caching.
+  GitHub + Gitea compatible (Gitea must allow fetching GitHub actions).
+
+inputs:
+  version:
+    description: 'pnpm version: a range/major (e.g. "9"), exact ("9.0.0"), or "latest".'
+    required: false
+    default: 'latest'
+  run-install:
+    description: 'Run "pnpm install" after setup ("true"/"false").'
+    required: false
+    default: 'false'
+  package-json-file:
+    description: 'Path to package.json used to detect the pnpm version.'
+    required: false
+    default: 'package.json'
+  dest:
+    description: 'Directory where pnpm will be installed.'
+    required: false
+    default: '~/setup-pnpm'
+  standalone:
+    description: 'Install pnpm standalone (no bundled Node fetch) ("true"/"false").'
+    required: false
+    default: 'false'
+
+outputs:
+  version:
+    description: 'The resolved pnpm version that was installed.'
+    value: ${{ steps.pnpm.outputs.version }}
+  dest:
+    description: 'Directory where pnpm was installed.'
+    value: ${{ steps.pnpm.outputs.dest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      id: pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.version }}
+        run_install: ${{ inputs.run-install == 'true' }}
+        package_json_file: ${{ inputs.package-json-file }}
+        dest: ${{ inputs.dest }}
+        standalone: ${{ inputs.standalone == 'true' }}

@@ -1,0 +1,98 @@
+name: Maven Build & Upload — Gitea (wrapped)
+description: >-
+  Gitea-compatible build-then-upload: checkout -> setup-maven (package) ->
+  upload-artifact-gitea (christopherHX/gitea-upload-artifact@v4). Use this
+  instead of maven-build-upload on Gitea, because actions/upload-artifact@v4
+  refuses non-github.com servers. Pair with docker-build-push-from-artifact-gitea
+  for the deploy half of a split pipeline.
+
+inputs:
+  # Java / Maven
+  java-version:
+    description: 'Java version, e.g. "17", "21".'
+    required: false
+    default: '17'
+  distribution:
+    description: 'JDK distribution: temurin, corretto, zulu, etc.'
+    required: false
+    default: 'temurin'
+  maven-version:
+    description: 'Maven version to install via stCarolas/setup-maven (e.g. "3.9.9").'
+    required: false
+    default: '3.9.9'
+  maven-goals:
+    description: 'Maven goals/phases to run, e.g. "clean package".'
+    required: false
+    default: 'clean package'
+  maven-args:
+    description: 'Extra Maven CLI arguments, e.g. "-DskipTests -B".'
+    required: false
+    default: ''
+  maven-profiles:
+    description: 'Comma-separated Maven profiles to activate (without -P).'
+    required: false
+    default: ''
+  cache:
+    description: 'Enable Maven dependency caching via setup-java ("maven"/"").'
+    required: false
+    default: 'maven'
+  # Artifact
+  artifact-name:
+    description: 'Name of the uploaded artifact.'
+    required: false
+    default: 'maven-build'
+  artifact-path:
+    description: 'Path(s) to upload as the artifact, e.g. "target/*.jar".'
+    required: false
+    default: 'target/*.jar'
+  # Checkout
+  checkout:
+    description: 'Run the checkout step first ("true"/"false"). Set "false" if the repo is already present.'
+    required: false
+    default: 'true'
+  ref:
+    description: Git ref to check out. Empty = default branch.
+    required: false
+    default: ''
+  token:
+    description: 'Token used to fetch the repository (github.token maps to the Gitea job token).'
+    required: false
+    default: ${{ github.token }}
+  fetch-depth:
+    description: 'Number of commits to fetch. 0 = full history.'
+    required: false
+    default: '1'
+  submodules:
+    description: 'Whether to checkout submodules: "true", "false", or "recursive".'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      if: ${{ inputs.checkout == 'true' }}
+      uses: ./.github/actions/checkout
+      with:
+        ref: ${{ inputs.ref }}
+        token: ${{ inputs.token }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        submodules: ${{ inputs.submodules }}
+
+    - name: Setup Maven & build
+      uses: ./.github/actions/setup-maven
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: ${{ inputs.distribution }}
+        maven-version: ${{ inputs.maven-version }}
+        goals: ${{ inputs.maven-goals }}
+        args: ${{ inputs.maven-args }}
+        profiles: ${{ inputs.maven-profiles }}
+        cache: ${{ inputs.cache }}
+
+    - name: Upload build artifact (Gitea)
+      uses: ./.github/actions/upload-artifact-gitea
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.artifact-path }}
+        if-no-files-found: 'error'

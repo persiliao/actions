@@ -1,0 +1,113 @@
+name: Docker Build & Push (wrapped)
+description: >-
+  Build and optionally push a Docker image using the official
+  docker/login-action and docker/build-push-action. Supports multi-registry,
+  multi-platform, build args, target stage, and build cache. Every step
+  delegates to an existing published action (GitHub + Gitea compatible; Gitea
+  must allow fetching GitHub actions).
+
+inputs:
+  image:
+    description: 'Image name without registry, e.g. "myorg/myapp".'
+    required: true
+  tags:
+    description: 'Space- or newline-separated tags, e.g. "latest v1.2.3".'
+    required: false
+    default: 'latest'
+  registry:
+    description: 'Registry host (e.g. ghcr.io, docker.io, registry.example.com). Empty = docker.io.'
+    required: false
+    default: ''
+  username:
+    description: 'Registry username. Empty = skip login.'
+    required: false
+    default: ''
+  password:
+    description: 'Registry password / token.'
+    required: false
+    default: ''
+  dockerfile:
+    description: 'Path to the Dockerfile.'
+    required: false
+    default: 'Dockerfile'
+  context:
+    description: 'Build context path.'
+    required: false
+    default: '.'
+  platforms:
+    description: 'Target platforms, e.g. "linux/amd64,linux/arm64".'
+    required: false
+    default: 'linux/amd64'
+  push:
+    description: 'Whether to push the image ("true"/"false").'
+    required: false
+    default: 'false'
+  build-args:
+    description: 'Newline-separated build args (KEY=VALUE).'
+    required: false
+    default: ''
+  target:
+    description: 'Build target stage.'
+    required: false
+    default: ''
+  cache-from:
+    description: 'Cache from, e.g. "type=gha".'
+    required: false
+    default: ''
+  cache-to:
+    description: 'Cache to, e.g. "type=gha,mode=max".'
+    required: false
+    default: ''
+
+outputs:
+  image:
+    description: 'First fully-qualified image reference.'
+    value: ${{ steps.tags.outputs.first }}
+  tags:
+    description: 'Newline-separated fully-qualified image references.'
+    value: ${{ steps.tags.outputs.all }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compose image references
+      id: tags
+      shell: bash
+      run: |
+        REG="${{ inputs.registry }}"
+        [ -n "$REG" ] && REG="$REG/"
+        ALL=""
+        FIRST=""
+        for t in ${{ inputs.tags }}; do
+          ref="${REG}${{ inputs.image }}:$t"
+          ALL="${ALL}${ref}
+        "
+          [ -z "$FIRST" ] && FIRST="$ref"
+        done
+        {
+          echo "first=$FIRST"
+          echo "all<<EOF"
+          printf '%s' "$ALL"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Login to registry
+      if: ${{ inputs.username != '' && inputs.password != '' }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        push: ${{ inputs.push == 'true' }}
+        tags: ${{ steps.tags.outputs.all }}
+        platforms: ${{ inputs.platforms }}
+        target: ${{ inputs.target != '' && inputs.target || '' }}
+        build-args: ${{ inputs.build-args }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}

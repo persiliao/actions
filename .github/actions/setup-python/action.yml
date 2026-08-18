@@ -1,0 +1,34 @@
+name: Setup Python (wrapped)
+description: >-
+  Install a Python interpreter with pip/poetry/pipenv caching. Wraps
+  actions/setup-python so downstream repos share one configuration surface.
+  GitHub + Gitea compatible.
+
+inputs:
+  python-version:
+    description: 'Python version spec, e.g. "3.12" or "3.x".'
+    required: false
+    default: '3.12'
+  cache:
+    description: 'Cache target: "pip", "poetry", "pipenv". Empty = no cache (matches upstream default).'
+    required: false
+    default: ''
+  cache-dependency-path:
+    description: 'Path to the dependency file used for the cache key (e.g. "requirements.txt").'
+    required: false
+    default: ''
+  architecture:
+    description: 'Target architecture: "x64" or "x86".'
+    required: false
+    default: 'x64'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: ${{ inputs.cache != '' && inputs.cache || '' }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+        architecture: ${{ inputs.architecture }}

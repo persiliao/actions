@@ -1,0 +1,91 @@
+name: Setup Maven (wrapped)
+description: >-
+  Set up a JDK with Maven dependency caching (actions/setup-java), optionally
+  generate settings.xml (s4u/maven-settings-action), then run Maven
+  goals. GitHub + Gitea compatible (Gitea must allow fetching GitHub actions).
+
+inputs:
+  java-version:
+    description: 'Java version, e.g. "17", "21".'
+    required: false
+    default: '17'
+  distribution:
+    description: 'JDK distribution: temurin, corretto, zulu, etc.'
+    required: false
+    default: 'temurin'
+  goals:
+    description: 'Maven goals/phases to run, e.g. "clean verify".'
+    required: false
+    default: 'clean verify'
+  args:
+    description: 'Extra Maven CLI arguments appended after goals, e.g. "-DskipTests -B".'
+    required: false
+    default: ''
+  maven-version:
+    description: 'Maven version to install via stCarolas/setup-maven (e.g. "3.9.9").'
+    required: false
+    default: '3.9.9'
+  cache:
+    description: 'Enable Maven dependency caching via setup-java ("maven"/""). Requires a pom.xml or .mvn/ in the repo.'
+    required: false
+    default: 'maven'
+  profiles:
+    description: 'Comma-separated Maven profiles to activate (without -P).'
+    required: false
+    default: ''
+  use-mvnw:
+    description: 'Prefer the Maven Wrapper (./mvnw) when present ("true"/"false").'
+    required: false
+    default: 'true'
+  servers:
+    description: 'JSON array for maven-settings-action "servers" (id/username/password...).'
+    required: false
+    default: ''
+  mirrors:
+    description: 'JSON array for maven-settings-action "mirrors".'
+    required: false
+    default: ''
+  settings-path:
+    description: 'Directory to write settings.xml (default ~/.m2).'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Java + Maven cache
+      uses: actions/setup-java@v5
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: ${{ inputs.distribution }}
+        cache: ${{ inputs.cache != '' && inputs.cache || '' }}
+
+    - name: Install Maven
+      uses: stCarolas/setup-maven@v4
+      with:
+        maven-version: ${{ inputs.maven-version != '' && inputs.maven-version || '' }}
+
+    - name: Generate settings.xml
+      if: ${{ inputs.servers != '' || inputs.mirrors != '' }}
+      uses: s4u/maven-settings-action@v3.1.0
+      with:
+        servers: ${{ inputs.servers }}
+        mirrors: ${{ inputs.mirrors }}
+        settings-path: ${{ inputs.settings-path }}
+
+    - name: Run Maven
+      shell: bash
+      run: |
+        MVN="mvn"
+        # stCarolas/setup-maven installs to $RUNNER_TOOL_CACHE/maven/<ver>/x64/bin
+        # and adds it to PATH. Some runners (older act / Gitea) may not propagate
+        # the child action's GITHUB_PATH write into this composite step, so we
+        # locate the binary and prepend it to PATH as a defensive fallback.
+        if ! command -v mvn >/dev/null 2>&1; then
+          MAVEN_BIN=$(ls -d "$RUNNER_TOOL_CACHE"/maven/*/x64/bin 2>/dev/null | sort -V | tail -n1)
+          [ -n "$MAVEN_BIN" ] && export PATH="$MAVEN_BIN:$PATH"
+        fi
+        if [ "${{ inputs.use-mvnw }}" = "true" ] && [ -x ./mvnw ]; then MVN="./mvnw"; fi
+        PROFILES=""
+        if [ -n "${{ inputs.profiles }}" ]; then PROFILES="-P ${{ inputs.profiles }}"; fi
+        $MVN ${{ inputs.goals }} $PROFILES ${{ inputs.args }}

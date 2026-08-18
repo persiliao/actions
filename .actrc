@@ -1,0 +1,20 @@
+# act runtime configuration for testing the repo's reusable actions.
+# Run `act -W .github/workflows/test-actions.yml` to exercise all wrappers.
+#
+# On macOS the Docker credential store (osxkeychain) breaks act's image pull.
+# Run with an isolated HOME so act reads a credential-store-free config, e.g.:
+#   HOME=/tmp/act-home DOCKER_CONFIG=/tmp/act-home/.docker act -W ...
+# (scripts/test-with-act.sh sets this up automatically on macOS).
+#
+# --bind makes act bind-mount the repo instead of using a named volume, which
+# is required for local `uses: ./.github/actions/...` to resolve when the repo
+# is checked out under an isolated HOME.
+
+# Pull a lightweight runner image (Ubuntu 22.04 based) for fast local runs.
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# Apple Silicon hosts should emulate amd64 to match GitHub-hosted runners.
+--container-architecture linux/amd64
+
+# Bind-mount the repo so local composite actions resolve correctly.
+--bind

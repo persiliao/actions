@@ -1,0 +1,56 @@
+name: SSH / Rsync Deploy (wrapped)
+description: >-
+  Deploy files to a remote host over SSH using rsync, via the published
+  easingthemes/ssh-deploy action. Supports key or password auth and exclude
+  patterns. Every step delegates to an existing published action (GitHub +
+  Gitea compatible; Gitea must allow fetching GitHub actions).
+
+inputs:
+  host:
+    description: 'Remote host (IP or domain).'
+    required: true
+  port:
+    description: 'SSH port.'
+    required: false
+    default: '22'
+  username:
+    description: 'SSH user.'
+    required: true
+  key:
+    description: 'Private key (PEM). Provide via secrets.'
+    required: false
+    default: ''
+  password:
+    description: 'SSH password (used if key is empty).'
+    required: false
+    default: ''
+  source:
+    description: 'Local source path; MUST end with "/", e.g. "./dist/".'
+    required: true
+  target:
+    description: 'Remote target path; MUST start with "/", e.g. "/var/www/app".'
+    required: true
+  exclude:
+    description: 'Comma-separated rsync exclude patterns (e.g. ".git*,node_modules").'
+    required: false
+    default: ''
+  rsync-args:
+    description: 'Raw rsync args passed to the deploy action.'
+    required: false
+    default: '-azr --delete'
+
+runs:
+  using: composite
+  steps:
+    - name: Rsync deploy
+      uses: easingthemes/ssh-deploy@v5
+      with:
+        REMOTE_HOST: ${{ inputs.host }}
+        REMOTE_USER: ${{ inputs.username }}
+        REMOTE_PORT: ${{ inputs.port }}
+        SSH_PRIVATE_KEY: ${{ inputs.key }}
+        PASSWORD: ${{ inputs.password }}
+        SOURCE: ${{ inputs.source }}
+        TARGET: ${{ inputs.target }}
+        EXCLUDE: ${{ inputs.exclude }}
+        ARGS: ${{ inputs.rsync-args }}

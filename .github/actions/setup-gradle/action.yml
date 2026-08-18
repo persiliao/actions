@@ -1,0 +1,44 @@
+name: Setup Gradle (wrapped)
+description: >-
+  Set up Gradle (with build cache) and run build goals via the official
+  gradle/actions/setup-gradle action. GitHub + Gitea compatible (Gitea must
+  allow fetching GitHub actions).
+
+inputs:
+  gradle-version:
+    description: 'Gradle version to install. Empty = use the project wrapper.'
+    required: false
+    default: ''
+  arguments:
+    description: 'Gradle arguments/goals to execute, e.g. "build" or "test -x lint".'
+    required: false
+    default: 'build'
+  build-root-directory:
+    description: 'Path to the directory containing the Gradle build.'
+    required: false
+    default: ''
+  cache-encryption-key:
+    description: 'Base64-encoded key used to encrypt the Gradle cache.'
+    required: false
+    default: ''
+  cache-cleanup:
+    description: 'When to prune the cache: on-success, always, never.'
+    required: false
+    default: 'on-success'
+  validate-wrappers:
+    description: 'Validate the Gradle wrapper JARs ("true"/"false").'
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Gradle and run
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        gradle-version: ${{ inputs.gradle-version != '' && inputs.gradle-version || '' }}
+        arguments: ${{ inputs.arguments }}
+        build-root-directory: ${{ inputs.build-root-directory }}
+        cache-encryption-key: ${{ inputs.cache-encryption-key }}
+        cache-cleanup: ${{ inputs.cache-cleanup }}
+        validate-wrappers: ${{ inputs.validate-wrappers == 'true' }}

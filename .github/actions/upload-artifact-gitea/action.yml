@@ -1,0 +1,49 @@
+name: Upload Artifact — Gitea (wrapped)
+description: >-
+  Gitea-compatible upload using christopherHX/gitea-upload-artifact@v4, a copy
+  of actions/upload-artifact@v4 with the non-GitHub-server check removed. Use
+  this instead of upload-artifact on Gitea, because actions/upload-artifact@v4
+  refuses any non-github.com server. Same typed inputs as the GitHub wrapper.
+
+inputs:
+  name:
+    description: 'Artifact name.'
+    required: false
+    default: 'artifact'
+  path:
+    description: 'Path(s) to upload. Supports glob patterns, e.g. "target/*.jar".'
+    required: true
+  if-no-files-found:
+    description: 'Behavior when nothing matches: "warn", "error", or "ignore".'
+    required: false
+    default: 'error'
+  retention-days:
+    description: 'Days to retain the artifact (empty = org/repo default).'
+    required: false
+    default: ''
+  compression-level:
+    description: 'Compression level 0-9 (empty = action default of 6).'
+    required: false
+    default: ''
+  overwrite:
+    description: 'Overwrite an existing artifact with the same name ("true"/"false").'
+    required: false
+    default: 'false'
+  include-hidden-files:
+    description: 'Include hidden files such as .gitignore in the upload ("true"/"false").'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Upload artifact (Gitea)
+      uses: christopherHX/gitea-upload-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days != '' && inputs.retention-days || '' }}
+        compression-level: ${{ inputs.compression-level != '' && inputs.compression-level || '' }}
+        overwrite: ${{ inputs.overwrite }}
+        include-hidden-files: ${{ inputs.include-hidden-files }}

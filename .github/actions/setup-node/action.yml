@@ -1,0 +1,56 @@
+name: Setup Node.js (wrapped)
+description: >-
+  Install a Node.js version with npm/pnpm/yarn caching and optional registry
+  auth. Wraps actions/setup-node so downstream repos share one configuration
+  surface. GitHub + Gitea compatible.
+
+inputs:
+  node-version:
+    description: 'Node.js version spec, e.g. "20", "20.11.0", or "lts/*".'
+    required: false
+    default: '20'
+  cache:
+    description: 'Package manager to cache: "npm", "pnpm", "yarn". Empty = no cache (matches upstream default).'
+    required: false
+    default: ''
+  cache-dependency-path:
+    description: 'Path to the lockfile used for the cache key (e.g. "pnpm-lock.yaml").'
+    required: false
+    default: ''
+  registry-url:
+    description: 'npm registry URL (e.g. https://registry.npmjs.org).'
+    required: false
+    default: ''
+  scope:
+    description: 'npm scope for registry auth (e.g. "@myorg").'
+    required: false
+    default: ''
+  token:
+    description: 'npm auth token. Empty = skip auth configuration.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: ${{ inputs.cache != '' && inputs.cache || '' }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+        registry-url: ${{ inputs.registry-url }}
+        scope: ${{ inputs.scope }}
+
+    - name: Configure npm token
+      if: ${{ inputs.token != '' }}
+      shell: bash
+      env:
+        NPM_TOKEN: ${{ inputs.token }}
+        NPM_REGISTRY: ${{ inputs.registry-url }}
+      run: |
+        if [ -n "$NPM_REGISTRY" ]; then
+          npm config set "${NPM_REGISTRY%/}/:_authToken" "$NPM_TOKEN"
+        else
+          npm config set "//registry.npmjs.org/:_authToken" "$NPM_TOKEN"
+        fi

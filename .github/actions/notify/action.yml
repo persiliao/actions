@@ -1,0 +1,247 @@
+name: Notify (wrapped, multi-channel)
+description: >-
+  Send a CI notification through one of several common channels. The `channel`
+  input selects the provider; every branch delegates to an existing published
+  action (GitHub + Gitea compatible; Gitea must allow fetching GitHub actions).
+
+  Supported channels:
+    slack    -> rtCamp/action-slack-notify@v2          (webhook-url)
+    discord  -> appleboy/discord-action@v1.2.0         (webhook-url)
+    telegram -> appleboy/telegram-action@master        (token + to)
+    feishu   -> foxundermoon/feishu-action@v2          (webhook-url)
+    dingtalk -> ghostoy/dingtalk-action@master         (webhook-url + optional secret)
+    email    -> dawidd6/action-send-mail@v3            (smtp-* + mail-* inputs)
+    webhook  -> distributhor/workflow-webhook@v1       (webhook-url + optional webhook-data)
+    wecom    -> chf007/action-wechat-work@master       (webhook-url, 企业微信群机器人)
+
+  Color is auto-derived from `status` for Slack/Discord unless `color` overrides.
+
+inputs:
+  channel:
+    description: 'Which channel to use: slack | discord | telegram | feishu | dingtalk | email | webhook | wecom.'
+    required: false
+    default: 'slack'
+  status:
+    description: 'Build status: success / failure / cancelled / custom. Drives the default color.'
+    required: false
+    default: 'success'
+  title:
+    description: 'Notification title (used where the channel supports it).'
+    required: false
+    default: ''
+  message:
+    description: 'Notification body text.'
+    required: false
+    default: ''
+  color:
+    description: 'Override color. Slack: good/danger/warning or hex. Discord: hex (#rrggbb).'
+    required: false
+    default: ''
+  # Shared by webhook-based channels (slack/discord/feishu/dingtalk/webhook)
+  webhook-url:
+    description: 'Incoming webhook URL for the selected channel.'
+    required: false
+    default: ''
+  # Telegram
+  token:
+    description: 'Telegram bot token (channel=telegram).'
+    required: false
+    default: ''
+  to:
+    description: 'Telegram chat id (channel=telegram).'
+    required: false
+    default: ''
+  # DingTalk
+  dingtalk-secret:
+    description: 'DingTalk signing secret, if the robot uses "加签" (channel=dingtalk).'
+    required: false
+    default: ''
+  # Email (dawidd6/action-send-mail)
+  smtp-server:
+    description: 'SMTP server address (channel=email).'
+    required: false
+    default: ''
+  smtp-port:
+    description: 'SMTP server port (channel=email).'
+    required: false
+    default: '465'
+  smtp-username:
+    description: 'SMTP username (channel=email).'
+    required: false
+    default: ''
+  smtp-password:
+    description: 'SMTP password / app password (channel=email).'
+    required: false
+    default: ''
+  mail-to:
+    description: 'Recipient address(es), comma-separated (channel=email).'
+    required: false
+    default: ''
+  mail-from:
+    description: 'Sender name/address (channel=email).'
+    required: false
+    default: ''
+  mail-subject:
+    description: 'Email subject; falls back to title (channel=email).'
+    required: false
+    default: ''
+  # Generic webhook
+  webhook-secret:
+    description: 'Signature secret for distributhor/workflow-webhook (channel=webhook). Harmless if the endpoint does not verify it.'
+    required: false
+    default: ''
+  webhook-data:
+    description: 'Raw JSON payload for channel=webhook. If empty, a default {title,message,status} body is built.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Validate channel
+      shell: bash
+      run: |
+        case "${{ inputs.channel }}" in
+          slack|discord|telegram|feishu|dingtalk|email|webhook|wecom) ;;
+          *) echo "::error::Unsupported channel '${{ inputs.channel }}'. Supported: slack, discord, telegram, feishu, dingtalk, email, webhook, wecom"; exit 1 ;;
+        esac
+
+    # ---- Slack ----
+    - name: Notify Slack
+      if: ${{ inputs.channel == 'slack' }}
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_WEBHOOK: ${{ inputs.webhook-url }}
+        SLACK_USERNAME: GitHub Actions
+        SLACK_TITLE: ${{ inputs.title }}
+        SLACK_MESSAGE: ${{ inputs.message }}
+        SLACK_COLOR: ${{ inputs.color != '' && inputs.color || (inputs.status == 'failure' && 'danger' || (inputs.status == 'cancelled' && 'warning' || 'good')) }}
+
+    # ---- Discord ----
+    - name: Notify Discord
+      if: ${{ inputs.channel == 'discord' }}
+      uses: appleboy/discord-action@v1.2.0
+      with:
+        webhook_url: ${{ inputs.webhook-url }}
+        username: GitHub Actions
+        message: ${{ inputs.message }}
+        color: ${{ inputs.color != '' && inputs.color || (inputs.status == 'failure' && '#ff0000' || (inputs.status == 'cancelled' && '#ffcc00' || '#28a745')) }}
+
+    # ---- Telegram ----
+    - name: Notify Telegram
+      if: ${{ inputs.channel == 'telegram' }}
+      uses: appleboy/telegram-action@master
+      with:
+        token: ${{ inputs.token }}
+        to: ${{ inputs.to }}
+        format: markdown
+        message: ${{ inputs.message }}
+
+    # ---- Feishu (build JSON body, then delegate) ----
+    - name: Build Feishu payload
+      if: ${{ inputs.channel == 'feishu' }}
+      id: feishu-body
+      shell: bash
+      env:
+        MSG: ${{ inputs.message }}
+        TITLE: ${{ inputs.title }}
+      run: |
+        BODY=$(python3 -c "import json,os; m=os.environ.get('MSG',''); t=os.environ.get('TITLE',''); print(json.dumps({'text':(t+chr(10)+m if t else m)}, ensure_ascii=False))")
+        printf 'content=%s\n' "$BODY" >> "$GITHUB_OUTPUT"
+
+    - name: Notify Feishu
+      if: ${{ inputs.channel == 'feishu' }}
+      uses: foxundermoon/feishu-action@v2
+      with:
+        url: ${{ inputs.webhook-url }}
+        msg_type: text
+        content: ${{ steps.feishu-body.outputs.content }}
+
+    # ---- DingTalk (build JSON body, then delegate) ----
+    - name: Build DingTalk payload
+      if: ${{ inputs.channel == 'dingtalk' }}
+      id: dingtalk-body
+      shell: bash
+      env:
+        MSG: ${{ inputs.message }}
+        TITLE: ${{ inputs.title }}
+      run: |
+        BODY=$(python3 -c "import json,os; m=os.environ.get('MSG',''); t=os.environ.get('TITLE','') or 'Notification'; print(json.dumps({'msgtype':'markdown','markdown':{'title':t,'text':m}}, ensure_ascii=False))")
+        printf 'content=%s\n' "$BODY" >> "$GITHUB_OUTPUT"
+
+    - name: Notify DingTalk
+      if: ${{ inputs.channel == 'dingtalk' }}
+      uses: ghostoy/dingtalk-action@master
+      with:
+        webhook: ${{ inputs.webhook-url }}
+        msgtype: markdown
+        content: ${{ steps.dingtalk-body.outputs.content }}
+        secret: ${{ inputs.dingtalk-secret }}
+
+    # ---- WeCom / 企业微信 (build markdown content, then delegate) ----
+    - name: Build WeCom payload
+      if: ${{ inputs.channel == 'wecom' }}
+      id: wecom-body
+      shell: bash
+      env:
+        MSG: ${{ inputs.message }}
+        TITLE: ${{ inputs.title }}
+        STATUS: ${{ inputs.status }}
+      run: |
+        CONTENT=$(python3 -c "import os; t=os.environ.get('TITLE',''); m=os.environ.get('MSG',''); s=os.environ.get('STATUS',''); L={'success':'✅ Success','failure':'❌ Failure','cancelled':'⚠️ Cancelled'}.get(s,s); parts=((['**'+t+'**'] if t else [])+[L]+(['> '+m] if m else [])); print('\n'.join(parts))")
+        # Multi-line output must use the heredoc delimiter syntax, otherwise
+        # GitHub/act mis-parse $GITHUB_OUTPUT and the value arrives blank.
+        {
+          echo "content<<WECOM_EOF"
+          echo "$CONTENT"
+          echo "WECOM_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Notify WeCom (企业微信)
+      if: ${{ inputs.channel == 'wecom' }}
+      uses: chf007/action-wechat-work@master
+      env:
+        WECHAT_WORK_BOT_WEBHOOK: ${{ inputs.webhook-url }}
+      with:
+        msgtype: markdown
+        content: ${{ steps.wecom-body.outputs.content }}
+
+    # ---- Email ----
+    - name: Notify Email
+      if: ${{ inputs.channel == 'email' }}
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: ${{ inputs.smtp-server }}
+        server_port: ${{ inputs.smtp-port }}
+        username: ${{ inputs.smtp-username }}
+        password: ${{ inputs.smtp-password }}
+        subject: ${{ inputs.mail-subject != '' && inputs.mail-subject || (inputs.title != '' && inputs.title || 'GitHub Actions notification') }}
+        body: ${{ inputs.message != '' && inputs.message || inputs.title }}
+        to: ${{ inputs.mail-to }}
+        from: ${{ inputs.mail-from }}
+
+    # ---- Generic webhook ----
+    - name: Build webhook payload
+      if: ${{ inputs.channel == 'webhook' }}
+      id: webhook-body
+      shell: bash
+      env:
+        MSG: ${{ inputs.message }}
+        TITLE: ${{ inputs.title }}
+        WDATA: ${{ inputs.webhook-data }}
+        STATUS: ${{ inputs.status }}
+      run: |
+        if [ -n "$WDATA" ]; then
+          DATA="$WDATA"
+        else
+          DATA=$(python3 -c "import json,os; print(json.dumps({'title':os.environ.get('TITLE',''),'message':os.environ.get('MSG',''),'status':os.environ.get('STATUS','')}, ensure_ascii=False))")
+        fi
+        printf 'data=%s\n' "$DATA" >> "$GITHUB_OUTPUT"
+
+    - name: Notify webhook
+      if: ${{ inputs.channel == 'webhook' }}
+      uses: distributhor/workflow-webhook@v1
+      env:
+        webhook_url: ${{ inputs.webhook-url }}
+        webhook_secret: ${{ inputs.webhook-secret }}
+        data: ${{ steps.webhook-body.outputs.data }}

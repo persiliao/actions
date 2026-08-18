@@ -1,0 +1,45 @@
+name: Checkout (wrapped)
+description: >-
+  Unified repository checkout with opinionated defaults. Wraps actions/checkout
+  so other repos can reference a single stable interface. Works on GitHub and
+  Gitea (Gitea runners must allow fetching actions from GitHub, or vendor this
+  action locally).
+
+inputs:
+  ref:
+    description: Git ref (branch, tag, or SHA) to check out. Empty = default branch.
+    required: false
+    default: ''
+  token:
+    description: Token used to fetch the repository. Defaults to the job token.
+    required: false
+    default: ${{ github.token }}
+  submodules:
+    description: 'Whether to checkout submodules: "true", "false", or "recursive".'
+    required: false
+    default: 'false'
+  fetch-depth:
+    description: 'Number of commits to fetch. 0 = full history. Use 0 for tags/release jobs.'
+    required: false
+    default: '1'
+  path:
+    description: Relative path under the workspace to check out into.
+    required: false
+    default: '.'
+  persist-credentials:
+    description: 'Persist the token in the local git config for later git commands.'
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.ref }}
+        token: ${{ inputs.token }}
+        submodules: ${{ inputs.submodules }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        path: ${{ inputs.path }}
+        persist-credentials: ${{ inputs.persist-credentials }}

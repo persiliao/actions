@@ -1,0 +1,69 @@
+name: Setup Java (wrapped)
+description: >-
+  Install a JDK and configure dependency caching for Maven/Gradle, via the
+  published actions/setup-java action. GitHub + Gitea compatible (Gitea must
+  allow fetching GitHub actions).
+
+inputs:
+  java-version:
+    description: 'Java version, e.g. "17", "21", "21.0.3".'
+    required: false
+    default: '17'
+  distribution:
+    description: 'JDK distribution: temurin, corretto, zulu, adopt, oracle, etc.'
+    required: false
+    default: 'temurin'
+  java-package:
+    description: 'Java package: "jdk", "jre", or "jdk+fx".'
+    required: false
+    default: 'jdk'
+  architecture:
+    description: 'Target architecture: "x64", "x86", "arm", etc.'
+    required: false
+    default: 'x64'
+  cache:
+    description: 'Dependency cache: "maven", "gradle". Empty = no cache.'
+    required: false
+    default: ''
+  cache-dependency-path:
+    description: 'Path to pom.xml / build.gradle used for the cache key.'
+    required: false
+    default: ''
+  check-latest:
+    description: 'Check for and use the latest available version ("true"/"false").'
+    required: false
+    default: 'false'
+  server-id:
+    description: 'Maven server id for generated settings.xml (publish).'
+    required: false
+    default: ''
+  server-username:
+    description: 'Env var name holding the Maven server username.'
+    required: false
+    default: ''
+  server-password:
+    description: 'Env var name holding the Maven server password.'
+    required: false
+    default: ''
+  settings-path:
+    description: 'Directory to write the generated settings.xml.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Java
+      uses: actions/setup-java@v5
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: ${{ inputs.distribution }}
+        java-package: ${{ inputs.java-package }}
+        architecture: ${{ inputs.architecture }}
+        cache: ${{ inputs.cache != '' && inputs.cache || '' }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+        check-latest: ${{ inputs.check-latest == 'true' }}
+        server-id: ${{ inputs.server-id }}
+        server-username: ${{ inputs.server-username }}
+        server-password: ${{ inputs.server-password }}
+        settings-path: ${{ inputs.settings-path }}

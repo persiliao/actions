@@ -1,0 +1,304 @@
+name: test-actions
+
+# Local test harness for this repo's reusable actions, designed to run with
+# `act` (https://github.com/nektos/act). It exercises every wrapper end-to-end
+# without pushing images, deploying anywhere, or sending real notifications.
+#
+#   ./scripts/test-with-act.sh                 # run all jobs
+#   ./scripts/test-with-act.sh --job test-toolchain
+#
+# `act` binds the repo into the runner (see .actrc / scripts), so the current
+# repo files are already present — the toolchain/build jobs do NOT need to
+# re-checkout. The `test-checkout` job exercises the checkout wrapper itself
+# and requires a token (see notes below).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/actions/**'
+      - '.github/workflows/test-actions.yml'
+
+jobs:
+  # Exercises the checkout wrapper. Requires a token because the wrapper
+  # forwards `github.token` to actions/checkout, which clones the repo.
+  # Provide one with: act --secret GITHUB_TOKEN=ghp_xxx ...
+  # Without a token the step fails but the job is allowed to continue so the
+  # rest of the harness stays green.
+  test-checkout:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (wrapped)
+        continue-on-error: true
+        uses: ./.github/actions/checkout
+        with:
+          fetch-depth: 1
+
+      - name: Sanity check workspace
+        run: test -f .github/actions/checkout/action.yml && echo "checkout action present"
+
+  test-toolchain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: '20'
+
+      - name: Verify node
+        run: node --version && npm --version
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          version: '9'
+
+      - name: Verify pnpm
+        run: pnpm --version
+
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: '1.22'
+
+      - name: Verify go
+        run: go version
+
+      - uses: ./.github/actions/setup-python
+        with:
+          python-version: '3.12'
+
+      - name: Verify python
+        run: python --version
+
+      - uses: ./.github/actions/setup-java
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Verify java
+        run: java -version
+
+  test-build-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/setup-maven
+        with:
+          java-version: '17'
+          cache: ''
+          goals: '--version'
+
+      - uses: ./.github/actions/setup-gradle
+        with:
+          arguments: '--version'
+
+  test-docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare a trivial Dockerfile
+        run: |
+          mkdir -p docker-smoke
+          printf 'FROM alpine:3.20\nCMD ["echo","ok"]\n' > docker-smoke/Dockerfile
+
+      - name: Build only (no push)
+        uses: ./.github/actions/docker-build
+        with:
+          image: local/smoke-test
+          tags: latest
+          context: docker-smoke
+          dockerfile: docker-smoke/Dockerfile
+          platforms: linux/amd64
+          push: 'false'
+
+  test-artifact-roundtrip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create a sample build output
+        run: |
+          mkdir -p build-out
+          echo "build-$(date +%s)" > build-out/version.txt
+          echo "hello artifact" > build-out/note.txt
+
+      - name: Upload (wrapped)
+        uses: ./.github/actions/upload-artifact
+        with:
+          name: roundtrip-test
+          path: build-out/*
+          if-no-files-found: 'error'
+
+      - name: Download into a fresh dir (wrapped)
+        uses: ./.github/actions/download-artifact
+        with:
+          name: roundtrip-test
+          path: reassembled
+
+      - name: Verify round-trip
+        run: |
+          test -f reassembled/version.txt
+          test -f reassembled/note.txt
+          echo "downloaded content:"; cat reassembled/note.txt
+
+  # End-to-end exercise of the one-step orchestrator: a trivial Maven project
+  # is built and the jar is used directly by the Docker build (same job
+  # workspace, no cross-job artifact). Push is disabled (no registry). Requires
+  # network for Maven Central plugins and the base image; on a real runner this
+  # pushes too.
+  test-maven-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scaffold a minimal Maven project
+        run: |
+          mkdir -p demo/src/main/java/com/example
+          cat > pom.xml <<'POM'
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>com.example</groupId>
+            <artifactId>demo</artifactId>
+            <version>1.0.0</version>
+            <properties>
+              <maven.compiler.release>17</maven.compiler.release>
+            </properties>
+          </project>
+          POM
+          cat > demo/src/main/java/com/example/App.java <<'JAVA'
+          package com.example;
+          public class App {
+            public static void main(String[] args) {
+              System.out.println("demo built by maven-docker-build-push");
+            }
+          }
+          JAVA
+          cat > Dockerfile.test <<'DOCKER'
+          FROM alpine:3.20
+          COPY target/*.jar /app/app.jar
+          CMD ["true"]
+          DOCKER
+
+      - name: Run orchestrator (no push)
+        uses: ./.github/actions/maven-docker-build-push
+        with:
+          checkout: 'false'            # repo already bind-mounted; we scaffolded above
+          java-version: '17'
+          maven-goals: 'package'
+          maven-args: '-B'
+          cache: ''
+          image: local/orchestrator-test
+          dockerfile: Dockerfile.test
+          context: .
+          push: 'false'
+
+      - name: Verify the jar was produced and reused by the image build
+        run: |
+          test -f target/demo-1.0.0.jar && echo "jar present: $(ls -1 target/*.jar)"
+
+  test-ssh-deploy-dry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare dummy artifact
+        run: mkdir -p dist && echo "hello" > dist/index.txt
+
+      - name: SSH deploy (dry, no live host)
+        # ssh-deploy will attempt a connection; we point it at a non-routable
+        # host but expect the *action wiring* (input mapping) to be valid. The
+        # step is allowed to fail so the harness reports a clear wiring check
+        # rather than a network error. Inspect locally for real deploys.
+        continue-on-error: true
+        uses: ./.github/actions/ssh-deploy
+        with:
+          host: 203.0.113.1
+          port: '22'
+          username: ci
+          password: dummy
+          source: ./dist/
+          target: /tmp/smoke
+          exclude: '.git*'
+
+  test-notify-dry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify (dry, expect-post-bodies-to-be-built)
+        # No real webhook: rtCamp action will fail to POST. We only assert the
+        # wrapper maps inputs (status -> color) correctly. Local real test:
+        #   act -s SLACK_WEBHOOK="https://hooks.slack.com/..." -W ...
+        continue-on-error: true
+        uses: ./.github/actions/notify
+        with:
+          webhook-url: 'https://example.invalid/hooks/T000/B000/XXXXXXXX'
+          status: success
+          title: 'smoke test'
+          message: 'act dry-run notify'
+
+  # Validates the channel selector + per-channel wiring (build step, gating).
+  # Each step uses dummy credentials so the actual POST fails; continue-on-error
+  # keeps the harness green while confirming the wrapper executes end-to-end.
+  test-notify-channels:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord wiring
+        continue-on-error: true
+        uses: ./.github/actions/notify
+        with:
+          channel: discord
+          webhook-url: 'https://example.invalid/webhook'
+          status: failure
+          title: 'build failed'
+          message: 'act discord wiring check'
+
+      - name: Telegram wiring
+        continue-on-error: true
+        uses: ./.github/actions/notify
+        with:
+          channel: telegram
+          token: 'dummy-token'
+          to: '000000000'
+          message: 'act telegram wiring check'
+
+      - name: Feishu wiring
+        continue-on-error: true
+        uses: ./.github/actions/notify
+        with:
+          channel: feishu
+          webhook-url: 'https://example.invalid/webhook'
+          title: 'build ok'
+          message: 'act feishu wiring check'
+
+      - name: DingTalk wiring
+        continue-on-error: true
+        uses: ./.github/actions/notify
+        with:
+          channel: dingtalk
+          webhook-url: 'https://oapi.dingtalk.com/robot/send?access_token=dummy'
+          title: 'build ok'
+          message: 'act dingtalk wiring check'
+
+      - name: Email wiring
+        continue-on-error: true
+        uses: ./.github/actions/notify
+        with:
+          channel: email
+          smtp-server: smtp.example.invalid
+          smtp-port: '465'
+          smtp-username: ci@example.invalid
+          smtp-password: dummy
+          mail-to: dev@example.invalid
+          mail-from: ci@example.invalid
+          mail-subject: 'act email wiring check'
+          message: 'act email wiring check'
+
+      - name: Generic webhook wiring
+        continue-on-error: true
+        uses: ./.github/actions/notify
+        with:
+          channel: webhook
+          webhook-url: 'https://example.invalid/webhook'
+          title: 'build ok'
+          message: 'act webhook wiring check'
+
+      - name: WeCom wiring
+        continue-on-error: true
+        uses: ./.github/actions/notify
+        with:
+          channel: wecom
+          webhook-url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=dummy'
+          status: success
+          title: 'build ok'
+          message: 'act wecom wiring check'

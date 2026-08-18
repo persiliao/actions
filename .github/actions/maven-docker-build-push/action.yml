@@ -1,0 +1,163 @@
+name: Maven → Docker Build & Push (one-step)
+description: >-
+  Complete Java CI/CD pipeline in a single action, with NO cross-job artifact
+  dependency (so it runs unchanged on both GitHub and Gitea):
+
+    1. Checkout
+    2. Maven package      (setup-maven)
+    3. Docker build & push (docker-build) — the built JAR stays in target/ and
+       your Dockerfile COPYs it directly from there (same job workspace).
+
+  Composes the repo's checkout, setup-maven, and docker-build wrappers.
+  Downstream repos import this ONE action to run the whole flow. Because there
+  is no upload/download-artifact step, it avoids the Gitea incompatibility
+  where actions/upload-artifact@v4 refuses non-github.com servers. For a split
+  build/deploy pipeline that passes artifacts between two jobs, use
+  maven-build-upload and docker-build-push-from-artifact instead (those expose
+  an action-ref for the Gitea artifact fork).
+
+inputs:
+  # Java / Maven (build stage)
+  java-version:
+    description: 'Java version, e.g. "17", "21".'
+    required: false
+    default: '17'
+  distribution:
+    description: 'JDK distribution: temurin, corretto, zulu, etc.'
+    required: false
+    default: 'temurin'
+  maven-version:
+    description: 'Maven version to install via stCarolas/setup-maven (e.g. "3.9.9").'
+    required: false
+    default: '3.9.9'
+  maven-goals:
+    description: 'Maven goals/phases to run, e.g. "clean package".'
+    required: false
+    default: 'clean package'
+  maven-args:
+    description: 'Extra Maven CLI arguments, e.g. "-DskipTests -B".'
+    required: false
+    default: ''
+  maven-profiles:
+    description: 'Comma-separated Maven profiles to activate (without -P).'
+    required: false
+    default: ''
+  cache:
+    description: 'Enable Maven dependency caching via setup-java ("maven"/"").'
+    required: false
+    default: 'maven'
+
+  # Docker (image stage)
+  image:
+    description: 'Image name without registry, e.g. "myorg/myapp".'
+    required: true
+  tags:
+    description: 'Space- or newline-separated tags, e.g. "latest ${{ github.sha }}".'
+    required: false
+    default: 'latest'
+  registry:
+    description: 'Registry host (e.g. ghcr.io, docker.io, registry.example.com). Empty = docker.io.'
+    required: false
+    default: ''
+  username:
+    description: 'Registry username. Empty = skip login.'
+    required: false
+    default: ''
+  password:
+    description: 'Registry password / token. On Gitea, push to the built-in registry needs a PAT (GITEA_TOKEN cannot publish to the package/OCI registry).'
+    required: false
+    default: ''
+  dockerfile:
+    description: 'Path to the Dockerfile.'
+    required: false
+    default: 'Dockerfile'
+  context:
+    description: 'Build context path (must include the built target/ dir).'
+    required: false
+    default: '.'
+  platforms:
+    description: 'Target platforms, e.g. "linux/amd64,linux/arm64".'
+    required: false
+    default: 'linux/amd64'
+  push:
+    description: 'Whether to push the image ("true"/"false").'
+    required: false
+    default: 'true'
+  build-args:
+    description: 'Newline-separated build args (KEY=VALUE).'
+    required: false
+    default: ''
+  target:
+    description: 'Build target stage.'
+    required: false
+    default: ''
+  cache-from:
+    description: 'Cache from, e.g. "type=gha".'
+    required: false
+    default: ''
+  cache-to:
+    description: 'Cache to, e.g. "type=gha,mode=max".'
+    required: false
+    default: ''
+
+  # Orchestration
+  checkout:
+    description: 'Run the checkout step first ("true"/"false"). Set "false" if the repo is already present.'
+    required: false
+    default: 'true'
+  ref:
+    description: Git ref to check out. Empty = default branch.
+    required: false
+    default: ''
+  token:
+    description: Token used to fetch the repository. On Gitea this resolves to the Gitea job token (github.token is aliased to gitea.token).
+    required: false
+    default: ${{ github.token }}
+  fetch-depth:
+    description: 'Number of commits to fetch. 0 = full history.'
+    required: false
+    default: '1'
+  submodules:
+    description: 'Whether to checkout submodules: "true", "false", or "recursive".'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      if: ${{ inputs.checkout == 'true' }}
+      uses: ./.github/actions/checkout
+      with:
+        ref: ${{ inputs.ref }}
+        token: ${{ inputs.token }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        submodules: ${{ inputs.submodules }}
+
+    - name: Setup Maven & build
+      uses: ./.github/actions/setup-maven
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: ${{ inputs.distribution }}
+        maven-version: ${{ inputs.maven-version }}
+        goals: ${{ inputs.maven-goals }}
+        args: ${{ inputs.maven-args }}
+        profiles: ${{ inputs.maven-profiles }}
+        cache: ${{ inputs.cache }}
+
+    - name: Docker build & push
+      uses: ./.github/actions/docker-build
+      with:
+        image: ${{ inputs.image }}
+        tags: ${{ inputs.tags }}
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+        dockerfile: ${{ inputs.dockerfile }}
+        context: ${{ inputs.context }}
+        platforms: ${{ inputs.platforms }}
+        push: ${{ inputs.push }}
+        build-args: ${{ inputs.build-args }}
+        target: ${{ inputs.target }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
