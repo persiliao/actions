@@ -1,0 +1,179 @@
+name: "SCP Deploy"
+description: "Deploy files via SCP with optional SSH proxy/jump host support"
+author: Persi.Liao <xiangchu.liao@gmail.com>
+
+inputs:
+  # --- Target server ---
+  host:
+    description: "Target remote host"
+    required: true
+  port:
+    description: "Target SSH port"
+    required: false
+    default: "22"
+  username:
+    description: "Target SSH username"
+    required: true
+  key:
+    description: "Target SSH private key content"
+    required: false
+  password:
+    description: "Target SSH password"
+    required: false
+
+  # --- Source / Target paths ---
+  source:
+    description: "Local file(s) or directory to upload (supports glob patterns)"
+    required: true
+  target:
+    description: "Remote target directory path"
+    required: true
+  strip_components:
+    description: "Remove the specified number of leading path elements from source"
+    required: false
+    default: "0"
+
+  # --- Transfer options ---
+  rm:
+    description: "Remove target folder before uploading"
+    required: false
+    default: "false"
+  overwrite:
+    description: "Overwrite existing files in target"
+    required: false
+    default: "true"
+
+  # --- SSH options ---
+  fingerprint:
+    description: "Fingerprint of target host public key"
+    required: false
+  passphrase:
+    description: "Passphrase for SSH private key"
+    required: false
+  timeout:
+    description: "SSH connection timeout (seconds)"
+    required: false
+    default: "30s"
+  command_timeout:
+    description: "SCP command timeout (seconds)"
+    required: false
+    default: "120s"
+
+  # --- Proxy / Jump host ---
+  proxy_host:
+    description: "SSH proxy/jump host address"
+    required: false
+  proxy_port:
+    description: "SSH proxy/jump host port"
+    required: false
+    default: "22"
+  proxy_username:
+    description: "SSH proxy/jump host username"
+    required: false
+  proxy_key:
+    description: "SSH proxy/jump host private key content"
+    required: false
+  proxy_password:
+    description: "SSH proxy/jump host password"
+    required: false
+  proxy_fingerprint:
+    description: "Fingerprint of proxy host public key"
+    required: false
+  proxy_passphrase:
+    description: "Passphrase for proxy SSH private key"
+    required: false
+  proxy_type:
+    description: "Proxy type: http, socks5"
+    required: false
+    default: ""
+
+  # --- Post-transfer command ---
+  script:
+    description: "Custom command to execute on remote server after SCP transfer completes"
+    required: false
+    default: ""
+
+outputs:
+  status:
+    description: "SCP transfer status (success/failure)"
+    value: ${{ steps.scp-transfer.outputs.status }}
+
+runs:
+  using: "composite"
+  steps:
+    # --- Validate authentication ---
+    - name: Validate authentication method
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.key }}" ] && [ -z "${{ inputs.password }}" ]; then
+          echo "::error::Either 'key' or 'password' must be provided for target host authentication"
+          exit 1
+        fi
+
+    # --- Perform SCP transfer ---
+    - name: SCP file transfer
+      id: scp-transfer
+      uses: appleboy/scp-action@v1
+      with:
+        # Target
+        host: ${{ inputs.host }}
+        port: ${{ inputs.port }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.key }}
+        password: ${{ inputs.password }}
+
+        # Paths
+        source: ${{ inputs.source }}
+        target: ${{ inputs.target }}
+        strip_components: ${{ inputs.strip_components }}
+
+        # Options
+        rm: ${{ inputs.rm }}
+        overwrite: ${{ inputs.overwrite }}
+
+        # SSH
+        fingerprint: ${{ inputs.fingerprint }}
+        passphrase: ${{ inputs.passphrase }}
+        timeout: ${{ inputs.timeout }}
+        command_timeout: ${{ inputs.command_timeout }}
+
+        # Proxy
+        proxy_host: ${{ inputs.proxy_host }}
+        proxy_port: ${{ inputs.proxy_port }}
+        proxy_username: ${{ inputs.proxy_username }}
+        proxy_key: ${{ inputs.proxy_key }}
+        proxy_password: ${{ inputs.proxy_password }}
+        proxy_fingerprint: ${{ inputs.proxy_fingerprint }}
+        proxy_passphrase: ${{ inputs.proxy_passphrase }}
+        proxy_type: ${{ inputs.proxy_type }}
+
+    # --- Execute custom command after SCP ---
+    - name: Execute remote command
+      if: inputs.script != ''
+      uses: appleboy/ssh-action@v1
+      with:
+        host: ${{ inputs.host }}
+        port: ${{ inputs.port }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.key }}
+        password: ${{ inputs.password }}
+
+        fingerprint: ${{ inputs.fingerprint }}
+        passphrase: ${{ inputs.passphrase }}
+        timeout: ${{ inputs.timeout }}
+        command_timeout: ${{ inputs.command_timeout }}
+        proxy_host: ${{ inputs.proxy_host }}
+        proxy_port: ${{ inputs.proxy_port }}
+        proxy_username: ${{ inputs.proxy_username }}
+        proxy_key: ${{ inputs.proxy_key }}
+        proxy_password: ${{ inputs.proxy_password }}
+        proxy_fingerprint: ${{ inputs.proxy_fingerprint }}
+        proxy_passphrase: ${{ inputs.proxy_passphrase }}
+        proxy_type: ${{ inputs.proxy_type }}
+        script: ${{ inputs.script }}
+
+    # --- Output status ---
+    - name: Set output status
+      id: set-status
+      shell: bash
+      run: echo "status=success" >> "$GITHUB_OUTPUT"

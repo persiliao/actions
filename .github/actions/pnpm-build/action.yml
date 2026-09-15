@@ -1,0 +1,141 @@
+name: 'PNPM Build Action'
+description: 'Setup PNPM, install dependencies and build project'
+author: Persi.Liao <xiangchu.liao@gmail.com>
+
+branding:
+  icon: 'package'
+  color: 'orange'
+
+inputs:
+  node-version:
+    description: 'Node.js version to use'
+    required: false
+    default: '24'
+  pnpm-version:
+    description: 'PNPM version to use'
+    required: false
+    default: 'latest'
+  working-directory:
+    description: 'Working directory for commands'
+    required: false
+    default: '.'
+  install-command:
+    description: 'Custom install command'
+    required: false
+    default: 'pnpm install'
+  build-command:
+    description: 'Custom build command'
+    required: false
+    default: 'pnpm run build'
+  cache-dependencies:
+    description: 'Cache pnpm store and optionally node_modules'
+    required: false
+    default: 'false'
+  cache-node-modules:
+    description: 'Also cache node_modules (use only if pnpm store cache is insufficient)'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [[ -z "${{ inputs.install-command }}" ]]; then
+          echo "::error::install-command cannot be empty"
+          exit 1
+        fi
+        if [[ -z "${{ inputs.build-command }}" ]]; then
+          echo "::error::build-command cannot be empty"
+          exit 1
+        fi
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Determine pnpm action version based on Node.js version
+      id: pnpm-action
+      shell: bash
+      run: |
+        NODE_VERSION="${{ inputs.node-version }}"
+        PNPM_VERSION="${{ inputs.pnpm-version }}"
+        
+        # Extract major version from Node.js version
+        NODE_MAJOR="${NODE_VERSION%%.*}"
+        
+        # Use v6 for Node 20+, v4 for Node 18
+        if [ "$NODE_MAJOR" -ge 20 ]; then
+          echo "action_version=v6" >> "$GITHUB_OUTPUT"
+        else
+          echo "action_version=v4" >> "$GITHUB_OUTPUT"
+        fi
+        
+        # If pnpm-version is empty, we'll let package.json decide
+        if [ -z "$PNPM_VERSION" ]; then
+          echo "using_package_manager=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "using_package_manager=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Setup PNPM (v6 - Node 20+)
+      if: steps.pnpm-action.outputs.action_version == 'v6'
+      uses: pnpm/action-setup@v6
+      with:
+        version: ${{ inputs.pnpm-version }}
+        cache: true
+
+    - name: Setup PNPM (v4 - Node 18 fallback)
+      if: steps.pnpm-action.outputs.action_version == 'v4'
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+        cache: true
+
+    - name: Get PNPM store directory
+      id: pnpm-cache
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+    - name: Check lock file existence
+      id: check-lock
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if [[ -f "pnpm-lock.yaml" ]]; then
+          echo "lock_exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "lock_exists=false" >> $GITHUB_OUTPUT
+          echo "::warning::pnpm-lock.yaml not found. Cache will be less effective."
+        fi
+
+    - name: Cache PNPM store
+      if: inputs.cache-dependencies == 'true' && steps.check-lock.outputs.lock_exists == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-v1-${{ hashFiles(format('{0}/pnpm-lock.yaml', inputs.working-directory)) }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-v1-
+
+    - name: Cache node_modules
+      if: inputs.cache-node-modules == 'true' && steps.check-lock.outputs.lock_exists == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ inputs.working-directory }}/node_modules
+        key: ${{ runner.os }}-node-modules-v1-${{ hashFiles(format('{0}/pnpm-lock.yaml', inputs.working-directory)) }}
+        restore-keys: |
+          ${{ runner.os }}-node-modules-v1-
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: ${{ inputs.install-command }}
+
+    - name: Build
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: ${{ inputs.build-command }}

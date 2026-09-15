@@ -1,0 +1,149 @@
+name: "Maven Build"
+description: "Build Java/Maven projects with JDK setup, dependency caching, and customizable goals"
+author: Persi.Liao <xiangchu.liao@gmail.com>
+
+inputs:
+  # --- JDK Configuration ---
+  java-version:
+    description: "JDK version to use (e.g., 8, 11, 17, 21)"
+    required: false
+    default: "17"
+  java-distribution:
+    description: "JDK distribution (temurin, liberica, zulu, adopt, microsoft, corretto)"
+    required: false
+    default: "liberica"
+
+  # --- Maven Configuration ---
+  maven-goals:
+    description: "Maven goals to execute"
+    required: false
+    default: "clean package"
+  maven-opts:
+    description: "Additional MAVEN_OPTS"
+    required: false
+    default: ""
+  maven-version:
+    description: "Specific Maven version to use (leave empty for default)"
+    required: false
+    default: "3.9.14"
+  pom-file:
+    description: "Path to custom pom.xml (for multi-module projects)"
+    required: false
+    default: "pom.xml"
+
+  # --- Working Directory ---
+  working-directory:
+    description: "Working directory containing the pom.xml"
+    required: false
+    default: "."
+
+  # --- Testing ---
+  skip-tests:
+    description: "Skip test execution"
+    required: false
+    default: "true"
+  test-include:
+    description: "Test inclusion pattern"
+    required: false
+    default: ""
+  test-exclude:
+    description: "Test exclusion pattern"
+    required: false
+    default: ""
+
+  # --- Artifact Handling ---
+  artifact-path:
+    description: "Path to built artifacts (relative to working-directory)"
+    required: false
+    default: "target/*.jar"
+  artifact-name:
+    description: "Name for artifact upload (empty = no upload)"
+    required: false
+    default: ""
+
+outputs:
+  build-status:
+    description: "Build result (success/failure)"
+    value: ${{ steps.set-output.outputs.build-status }}
+  artifact-count:
+    description: "Number of built artifacts found"
+    value: ${{ steps.count-artifacts.outputs.count }}
+
+runs:
+  using: "composite"
+  steps:
+    # --- Validate inputs ---
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ ! -f "${{ inputs.working-directory }}/${{ inputs.pom-file }}" ]; then
+          echo "::error::pom.xml not found at ${{ inputs.working-directory }}/${{ inputs.pom-file }}"
+          exit 1
+        fi
+
+    # --- Setup JDK ---
+    - name: Setup JDK
+      uses: actions/setup-java@v6
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: ${{ inputs.java-distribution }}
+        cache: maven
+        cache-dependency-path: ${{ inputs.working-directory }}/pom.xml
+
+    # --- Setup specific Maven version (optional) ---
+    - name: Setup Maven
+      if: inputs.maven-version != ''
+      uses: stCarolas/setup-maven@v5
+      with:
+        maven-version: ${{ inputs.maven-version }}
+
+    # --- Build with Maven ---
+    - name: Build with Maven
+      id: maven-build
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        MAVEN_OPTS: ${{ inputs.maven-opts }}
+      run: |
+        GOALS="${{ inputs.maven-goals }}"
+
+        # Handle skip tests
+        if [ "${{ inputs.skip-tests }}" = "true" ]; then
+          GOALS="$GOALS -DskipTests -Dmaven.test.skip=true"
+        fi
+
+        # Handle test include/exclude
+        if [ -n "${{ inputs.test-include }}" ]; then
+          GOALS="$GOALS -Dtest=${{ inputs.test-include }}"
+        fi
+        if [ -n "${{ inputs.test-exclude }}" ]; then
+          GOALS="$GOALS -Dtest.exclude=${{ inputs.test-exclude }}"
+        fi
+
+        echo "Running: mvn $GOALS"
+        mvn $GOALS
+
+    # --- Count artifacts ---
+    - name: Count built artifacts
+      id: count-artifacts
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        COUNT=$(find . -path "*/target/*.jar" -o -path "*/target/*.war" 2>/dev/null | wc -l)
+        echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+        echo "Found $COUNT artifacts"
+
+    # --- Upload artifacts (optional) ---
+    - name: Upload artifacts
+      if: inputs.artifact-name != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.working-directory }}/${{ inputs.artifact-path }}
+        retention-days: 7
+
+    # --- Set output ---
+    - name: Set build output
+      id: set-output
+      shell: bash
+      run: echo "build-status=success" >> "$GITHUB_OUTPUT"

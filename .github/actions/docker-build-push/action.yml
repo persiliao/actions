@@ -1,0 +1,160 @@
+name: 'Docker Build and Push Action'
+description: 'Build and push Docker images with multi-architecture support and caching'
+author: Persi.Liao <xiangchu.liao@gmail.com>
+
+branding:
+  icon: 'anchor'
+  color: 'blue'
+
+inputs:
+  registry:
+    description: 'Container registry URL (e.g., ghcr.io, docker.io, your-registry.io)'
+    required: false
+    default: 'docker.io'
+  username:
+    description: 'Registry username'
+    required: false
+    default: ''
+  password:
+    description: 'Registry password or token'
+    required: false
+    default: ''
+  image-name:
+    description: 'Image name (without registry prefix, e.g., my-app)'
+    required: true
+  tags:
+    description: 'Image tags, comma separated (e.g., latest,1.0.0)'
+    required: false
+    default: 'latest'
+  dockerfile:
+    description: 'Path to Dockerfile'
+    required: false
+    default: './Dockerfile'
+  context:
+    description: 'Docker build context directory'
+    required: false
+    default: '.'
+  build-args:
+    description: 'Build arguments, JSON format (e.g., {"ARG1":"value1","ARG2":"value2"})'
+    required: false
+    default: ''
+  platforms:
+    description: 'Target platforms, comma separated (e.g., linux/amd64,linux/arm64)'
+    required: false
+    default: 'linux/amd64'
+  push:
+    description: 'Push image to registry after build'
+    required: false
+    default: 'true'
+  cache-from:
+    description: 'Cache source (e.g., type=gha, type=registry,ref=...)'
+    required: false
+    default: 'type=gha'
+  cache-to:
+    description: 'Cache destination (e.g., type=gha,mode=max)'
+    required: false
+    default: 'type=gha,mode=max'
+  target:
+    description: 'Docker build target stage'
+    required: false
+    default: ''
+  secrets:
+    description: 'Build secrets, JSON format (e.g., {"secret1":"value1"})'
+    required: false
+    default: ''
+
+outputs:
+  image-digest:
+    description: 'Digest of the built image'
+    value: ${{ steps.build-and-push.outputs.digest }}
+  image-tags:
+    description: 'List of pushed image tags'
+    value: ${{ steps.meta.outputs.tags }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [[ -z "${{ inputs.registry }}" ]]; then
+          echo "::error::registry is required"
+          exit 1
+        fi
+        if [[ -z "${{ inputs.image-name }}" ]]; then
+          echo "::error::image-name is required"
+          exit 1
+        fi
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: |
+          image=moby/buildkit:latest
+
+    - name: Log in to container registry
+      if: ${{ inputs.username != '' && inputs.password != '' }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+
+    - name: Generate Docker metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ inputs.registry }}/${{ inputs.image-name }}
+        tags: |
+          type=raw,value=${{ inputs.tags }}
+          type=sha,format=short
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Parse build arguments
+      id: parse-args
+      shell: bash
+      run: |
+        ARGS="${{ inputs.build-args }}"
+        SECRETS="${{ inputs.secrets }}"
+        
+        BUILD_ARGS=""
+        if [ -n "$ARGS" ] && [ "$ARGS" != "{}" ]; then
+          BUILD_ARGS=$(echo "$ARGS" | jq -r 'to_entries[] | "--build-arg \(.key)=\(.value)"' | tr '\n' ' ')
+        fi
+        echo "build_args=$BUILD_ARGS" >> "$GITHUB_OUTPUT"
+        
+        BUILD_SECRETS=""
+        if [ -n "$SECRETS" ] && [ "$SECRETS" != "{}" ]; then
+          BUILD_SECRETS=$(echo "$SECRETS" | jq -r 'to_entries[] | "--secret id=\(.key),env=\(.key)"' | tr '\n' ' ')
+          # Export secrets as environment variables for build
+          echo "$SECRETS" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+        fi
+        echo "build_secrets=$BUILD_SECRETS" >> "$GITHUB_OUTPUT"
+
+    - name: Build and push Docker image
+      id: build-and-push
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        platforms: ${{ inputs.platforms }}
+        push: ${{ inputs.push }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        target: ${{ inputs.target }}
+        build-args: ${{ steps.parse-args.outputs.build_args }}
+        secrets: ${{ steps.parse-args.outputs.build_secrets }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
+        provenance: mode=max
+        sbom: true
+
+    - name: Output image digest
+      shell: bash
+      run: |
+        echo "Image built successfully!"
+        echo "Tags: ${{ steps.meta.outputs.tags }}"
+        echo "Digest: ${{ steps.build-and-push.outputs.digest }}"

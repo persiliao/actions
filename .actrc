@@ -1,0 +1,27 @@
+# Specify runner images (very useful for M-chip Macs or missing tools)
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+-P ubuntu-22.04=catthehacker/ubuntu:act-22.04
+
+# Avoid architecture issues on ARM Macs
+--container-architecture linux/amd64
+
+# Load variables / secrets / inputs / events
+--var-file .vars
+--env-file .env
+--secret-file .secrets
+--input-file .inputs
+
+# Don't pull images every time
+--pull=false
+
+# Reuse containers (great for debugging steps)
+--reuse
+
+# Local artifact server path
+--artifact-server-path /tmp/act-artifacts
+
+# Offline mode using cached actions
+--action-offline-mode
+
+# Verbose logging
+; -v

@@ -1,0 +1,161 @@
+name: "Composite Notify"
+description: "Send notifications via Slack / Email / DingTalk / WeCom / Telegram using existing actions"
+author: Persi.Liao<xiangchu.liao@gmail.com>
+
+inputs:
+  channel:
+    description: "slack | email | wecom | telegram"
+    required: true
+
+  status:
+    description: "success | failure | cancelled | custom"
+    required: false
+    default: success
+
+  title:
+    description: "Notification title"
+    required: false
+    default: "GitHub Actions Notification"
+
+  message:
+    description: "Custom message (optional)"
+    required: false
+    default: ""
+
+  # Slack
+  slack-webhook-url:
+    required: false
+  slack-channel:
+    required: false
+    default: ""
+
+  # Email
+  mail-server:
+    required: false
+  mail-port:
+    required: false
+    default: "465"
+  mail-username:
+    required: false
+  mail-password:
+    required: false
+  mail-from:
+    required: false
+  mail-to:
+    required: false
+  mail-subject:
+    required: false
+    default: ""
+
+  # WeCom
+  wecom-webhook:
+    required: false
+
+  # Telegram
+  telegram-token:
+    required: false
+  telegram-to:
+    required: false
+
+outputs:
+  notified:
+    description: "Whether a configured channel was selected to send (true when the channel's required inputs are present)"
+    value: ${{ steps.meta.outputs.notified }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: meta
+      shell: bash
+      run: |
+        EMOJI="ℹ️"
+        if [ "${{ inputs.status }}" = "success" ]; then EMOJI="✅";
+        elif [ "${{ inputs.status }}" = "failure" ]; then EMOJI="❌";
+        elif [ "${{ inputs.status }}" = "cancelled" ]; then EMOJI="⏹️"; fi
+
+        MSG="${{ inputs.message }}"
+        if [ -z "$MSG" ]; then
+          MSG="${EMOJI} *${{ inputs.title }}*
+        Repo: ${{ github.repository }}
+        Workflow: ${{ github.workflow }}
+        Ref: ${{ github.ref_name }}
+        Actor: ${{ github.actor }}
+        Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        fi
+
+        {
+          echo "emoji=${EMOJI}"
+          echo "msg<<EOF"
+          echo "${MSG}"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        # Whether the selected channel is configured to fire. Mirrors the
+        # per-channel `if:` conditions below so the output reflects reality.
+        NOTIFIED=false
+        case "${{ inputs.channel }}" in
+          slack)    [ -n "${{ inputs.slack-webhook-url }}" ] && NOTIFIED=true ;;
+          email)    [ -n "${{ inputs.mail-server }}" ] && [ -n "${{ inputs.mail-to }}" ] && NOTIFIED=true ;;
+          wecom)    [ -n "${{ inputs.wecom-webhook }}" ] && NOTIFIED=true ;;
+          telegram) [ -n "${{ inputs.telegram-token }}" ] && [ -n "${{ inputs.telegram-to }}" ] && NOTIFIED=true ;;
+        esac
+        echo "notified=${NOTIFIED}" >> "$GITHUB_OUTPUT"
+
+    # ---------- Slack ----------
+    - name: Notify Slack
+      if: inputs.channel == 'slack' && inputs.slack-webhook-url != ''
+      uses: slackapi/slack-github-action@v2
+      with:
+        webhook: ${{ inputs.slack-webhook-url }}
+        webhook-type: incoming-webhook
+        payload: |
+          {
+            "text": "${{ steps.meta.outputs.msg }}",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "${{ steps.meta.outputs.msg }}"
+                }
+              }
+            ]
+          }
+
+    # ---------- Email ----------
+    - name: Notify Email
+      if: inputs.channel == 'email' && inputs.mail-server != '' && inputs.mail-to != ''
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: ${{ inputs.mail-server }}
+        server_port: ${{ inputs.mail-port }}
+        username: ${{ inputs.mail-username }}
+        password: ${{ inputs.mail-password }}
+        subject: ${{ inputs.mail-subject || inputs.title }}
+        from: ${{ inputs.mail-from }}
+        to: ${{ inputs.mail-to }}
+        body: ${{ steps.meta.outputs.msg }}
+
+    # ---------- WeCom (企业微信) ----------
+    - name: Notify WeCom
+      if: inputs.channel == 'wecom' && inputs.wecom-webhook != ''
+      shell: bash
+      run: |
+        curl -sS -X POST "${{ inputs.wecom-webhook }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "msgtype": "markdown",
+            "markdown": {
+              "content": "### ${{ inputs.title }}\n${{ steps.meta.outputs.msg }}"
+            }
+          }'
+
+    # ---------- Telegram ----------
+    - name: Notify Telegram
+      if: inputs.channel == 'telegram' && inputs.telegram-token != '' && inputs.telegram-to != ''
+      uses: appleboy/telegram-action@v1
+      with:
+        to: ${{ inputs.telegram-to }}
+        token: ${{ inputs.telegram-token }}
+        message: |
+          ${{ steps.meta.outputs.msg }}
