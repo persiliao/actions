@@ -1,0 +1,195 @@
+name: 'Docker Build and Push (local CLI)'
+description: 'Build and push Docker images using the local docker CLI client (docker build + docker push) — no buildx, no external GitHub Actions required'
+author: Persi.Liao <xiangchu.liao@gmail.com>
+
+branding:
+  icon: 'anchor'
+  color: 'blue'
+
+inputs:
+  registry:
+    description: 'Container registry URL (e.g. ghcr.io, docker.io, your-registry.io)'
+    required: false
+    default: 'docker.io'
+  username:
+    description: 'Registry username (login skipped when empty)'
+    required: false
+    default: ''
+  password:
+    description: 'Registry password or token (login skipped when empty)'
+    required: false
+    default: ''
+  image-name:
+    description: 'Image name without registry prefix (e.g. my-app)'
+    required: true
+  tags:
+    description: 'Comma-separated image tags (e.g. latest,1.0.0)'
+    required: false
+    default: 'latest'
+  dockerfile:
+    description: 'Path to the Dockerfile'
+    required: false
+    default: './Dockerfile'
+  context:
+    description: 'Docker build context directory'
+    required: false
+    default: '.'
+  build-args:
+    description: 'Build arguments as JSON (e.g. {"ARG1":"value1","ARG2":"value2"}), mapped to docker build --build-arg'
+    required: false
+    default: ''
+  pull:
+    description: 'Always attempt to pull a newer version of the base image'
+    required: false
+    default: 'true'
+  push:
+    description: 'Push the image to the registry after build'
+    required: false
+    default: 'true'
+  no-cache:
+    description: 'Disable all cache layers (do not use the cache)'
+    required: false
+    default: 'false'
+  target:
+    description: 'Docker build target stage'
+    required: false
+    default: ''
+  labels:
+    description: 'Image labels as JSON (e.g. {"org.opencontainers.image.title":"my-app"}), mapped to docker build --label'
+    required: false
+    default: ''
+
+outputs:
+  image-digest:
+    description: 'Digest (sha256) of the pushed image. When push is false this is the local image ID.'
+    value: ${{ steps.build.outputs.digest }}
+  image-tags:
+    description: 'Comma-separated list of built/pushed image tags'
+    value: ${{ steps.build.outputs.tags }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -z "${{ inputs.registry }}" ]]; then
+          echo "::error title=Validation Error::registry is required"
+          exit 1
+        fi
+        if [[ -z "${{ inputs.image-name }}" ]]; then
+          echo "::error title=Validation Error::image-name is required"
+          exit 1
+        fi
+        if [[ ! -f "${{ inputs.dockerfile }}" ]]; then
+          echo "::error title=Validation Error::Dockerfile not found at ${{ inputs.dockerfile }}"
+          exit 1
+        fi
+        if [[ ! -d "${{ inputs.context }}" ]]; then
+          echo "::error title=Validation Error::Build context directory not found at ${{ inputs.context }}"
+          exit 1
+        fi
+        echo "::notice::All validations passed successfully!"
+
+    - name: Log in to container registry
+      if: ${{ inputs.username != '' && inputs.password != '' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::notice::Logging in to ${{ inputs.registry }}"
+        echo "${{ inputs.password }}" | docker login "${{ inputs.registry }}" -u "${{ inputs.username }}" --password-stdin
+
+    - name: Build and push with local docker CLI
+      id: build
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        REGISTRY="${{ inputs.registry }}"
+        IMAGE="${{ inputs.image-name }}"
+        PUSH="${{ inputs.push }}"
+
+        # ---- Tags ----
+        TAGS_ARGS=""
+        FULL_TAGS=""
+        IFS=',' read -ra TAG_ARR <<< "${{ inputs.tags }}"
+        for t in "${TAG_ARR[@]}"; do
+          t=$(echo "$t" | xargs)
+          [ -z "$t" ] && continue
+          TAGS_ARGS="$TAGS_ARGS --tag $REGISTRY/$IMAGE:$t"
+          FULL_TAGS="${FULL_TAGS:+$FULL_TAGS,}$REGISTRY/$IMAGE:$t"
+        done
+
+        if [[ -z "$FULL_TAGS" ]]; then
+          echo "::error title=Validation Error::at least one tag is required"
+          exit 1
+        fi
+
+        # ---- Build args ----
+        BUILD_ARGS=""
+        ARGS='${{ inputs.build-args }}'
+        if [ -n "$ARGS" ] && [ "$ARGS" != "{}" ]; then
+          BUILD_ARGS=$(echo "$ARGS" | jq -r 'to_entries[]? | "--build-arg \(.key)=\(.value)"' | tr '\n' ' ')
+        fi
+
+        # ---- Labels ----
+        LABELS_ARGS=""
+        LABELS='${{ inputs.labels }}'
+        if [ -n "$LABELS" ] && [ "$LABELS" != "{}" ]; then
+          LABELS_ARGS=$(echo "$LABELS" | jq -r 'to_entries[]? | "--label \(.key)=\(.value)"' | tr '\n' ' ')
+        fi
+
+        TARGET_ARG=""
+        if [ -n "${{ inputs.target }}" ]; then
+          TARGET_ARG="--target ${{ inputs.target }}"
+        fi
+
+        PULL_ARG=""
+        [ "${{ inputs.pull }}" = "true" ] && PULL_ARG="--pull"
+        NOCACHE_ARG=""
+        [ "${{ inputs.no-cache }}" = "true" ] && NOCACHE_ARG="--no-cache"
+
+        echo "::notice::Building $IMAGE with the local docker CLI (no buildx)"
+        # shellcheck disable=SC2086
+        docker build \
+          $PULL_ARG \
+          $NOCACHE_ARG \
+          $TARGET_ARG \
+          $BUILD_ARGS \
+          $LABELS_ARGS \
+          --file "${{ inputs.dockerfile }}" \
+          $TAGS_ARGS \
+          "${{ inputs.context }}"
+
+        FIRST_TAG="$REGISTRY/$IMAGE:$(echo "${{ inputs.tags }}" | cut -d',' -f1 | xargs)"
+
+        # ---- Push / digest ----
+        if [ "$PUSH" = "true" ]; then
+          DIGEST=""
+          IFS=',' read -ra TAG_ARR2 <<< "$FULL_TAGS"
+          for full in "${TAG_ARR2[@]}"; do
+            echo "::notice::Pushing $full"
+            PUSH_OUT=$(docker push "$full" 2>&1)
+            echo "$PUSH_OUT"
+            d=$(echo "$PUSH_OUT" | grep -oE 'sha256:[a-f0-9]+' | head -1)
+            [ -z "$DIGEST" ] && DIGEST="$d"
+          done
+          echo "::notice::Pushed $IMAGE — digest: $DIGEST"
+        else
+          DIGEST=$(docker inspect --format='{{.Id}}' "$FIRST_TAG" 2>/dev/null || true)
+          echo "::notice::Build only (push=false) — local image id: $DIGEST"
+        fi
+
+        echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+        echo "tags=$FULL_TAGS" >> "$GITHUB_OUTPUT"
+        echo "::group::Build Results"
+        echo "Tags:    $FULL_TAGS"
+        echo "Digest:  $DIGEST"
+        echo "::endgroup::"
+
+    - name: Output build results
+      shell: bash
+      run: |
+        echo "image-digest : ${{ steps.build.outputs.digest }}"
+        echo "image-tags   : ${{ steps.build.outputs.tags }}"

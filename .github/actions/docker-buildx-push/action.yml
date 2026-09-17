@@ -1,0 +1,348 @@
+name: 'Docker Build and Push Action'
+description: 'Build and push Docker images with multi-architecture support and caching'
+author: Persi.Liao <xiangchu.liao@gmail.com>
+
+branding:
+  icon: 'anchor'
+  color: 'blue'
+
+inputs:
+  docker-version:
+    description: 'Docker version to install (e.g., 27, 26, 25, latest)'
+    required: false
+    default: 'latest'
+  docker-daemon-config:
+    description: 'Docker daemon configuration in JSON format'
+    required: false
+    default: '{}'
+  registry:
+    description: 'Container registry URL (e.g., ghcr.io, docker.io, your-registry.io)'
+    required: false
+    default: 'docker.io'
+  username:
+    description: 'Registry username'
+    required: false
+    default: ''
+  password:
+    description: 'Registry password or token'
+    required: false
+    default: ''
+  image-name:
+    description: 'Image name (without registry prefix, e.g., my-app)'
+    required: true
+  tags:
+    description: 'Image tags, comma separated (e.g., latest,1.0.0)'
+    required: false
+    default: 'latest'
+  dockerfile:
+    description: 'Path to Dockerfile'
+    required: false
+    default: './Dockerfile'
+  context:
+    description: 'Docker build context directory'
+    required: false
+    default: '.'
+  build-args:
+    description: 'Build arguments, JSON format (e.g., {"ARG1":"value1","ARG2":"value2"})'
+    required: false
+    default: ''
+  platforms:
+    description: 'Target platforms, comma separated (e.g., linux/amd64,linux/arm64)'
+    required: false
+    default: 'linux/amd64'
+  pull:
+    description: 'Always attempt to pull a newer version of the base image'
+    required: false
+    default: 'true'
+  push:
+    description: 'Push image to registry after build'
+    required: false
+    default: 'true'
+  cache-scope:
+    description: 'Cache scope for GitHub Actions cache (e.g., main, dev, feature-branch)'
+    required: false
+    default: ''
+  target:
+    description: 'Docker build target stage'
+    required: false
+    default: ''
+  secrets:
+    description: 'Build secrets, JSON format (e.g., {"secret1":"value1"})'
+    required: false
+    default: ''
+  github-token:
+    description: 'GitHub token for cache authentication'
+    required: false
+    default: ''
+
+outputs:
+  image-digest:
+    description: 'Digest of the built image'
+    value: ${{ steps.build-and-push.outputs.digest }}
+  image-tags:
+    description: 'List of pushed image tags'
+    value: ${{ steps.meta.outputs.tags }}
+  image-labels:
+    description: 'Labels applied to the image'
+    value: ${{ steps.meta.outputs.labels }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        # Required fields validation
+        if [[ -z "${{ inputs.registry }}" ]]; then
+          echo "::error title=Validation Error::registry is required"
+          exit 1
+        fi
+        if [[ -z "${{ inputs.image-name }}" ]]; then
+          echo "::error title=Validation Error::image-name is required"
+          exit 1
+        fi
+        
+        # Validate Dockerfile exists
+        if [[ ! -f "${{ inputs.dockerfile }}" ]]; then
+          echo "::error title=Validation Error::Dockerfile not found at ${{ inputs.dockerfile }}"
+          exit 1
+        fi
+        
+        # Validate context directory exists
+        if [[ ! -d "${{ inputs.context }}" ]]; then
+          echo "::error title=Validation Error::Build context directory not found at ${{ inputs.context }}"
+          exit 1
+        fi
+        
+        # Validate platforms format
+        PLATFORMS="${{ inputs.platforms }}"
+        IFS=',' read -ra PLATFORM_LIST <<< "$PLATFORMS"
+        for platform in "${PLATFORM_LIST[@]}"; do
+          trimmed_platform=$(echo "$platform" | xargs)
+          if [[ ! "$trimmed_platform" =~ ^(linux|windows)/(amd64|arm64|arm/v7|arm/v8|386|ppc64le|s390x)$ ]]; then
+            echo "::warning title=Invalid Platform::Platform '$trimmed_platform' may not be valid"
+          fi
+        done
+        
+        echo "::notice::All validations passed successfully!"
+
+    - name: Set up Docker
+      uses: docker/setup-docker-action@v5
+      with:
+        version: ${{ inputs.docker-version }}
+        daemon-config: "${{ inputs.docker-daemon-config }}"
+
+    - name: Determine if multi-platform build
+      id: platform-check
+      shell: bash
+      run: |
+        PLATFORMS="${{ inputs.platforms }}"
+        
+        COMMA_COUNT=$(echo "$PLATFORMS" | grep -c "," || true)
+
+        if [ "$COMMA_COUNT" -gt 0 ] || [[ "$PLATFORMS" == *"arm"* ]] || [[ "$PLATFORMS" == *"arm64"* ]]; then
+          echo "is_multi_platform=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Multi-platform build detected, setting up QEMU"
+        else
+          echo "is_multi_platform=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::Single platform build ($PLATFORMS), skipping QEMU setup"
+        fi
+
+    - name: Set up QEMU for multi-architecture builds
+      if: steps.platform-check.outputs.is_multi_platform == 'true'
+      uses: docker/setup-qemu-action@v4
+      with:
+        platforms: ${{ inputs.platforms }}
+        image: tonistiigi/binfmt:latest
+
+    - name: Set up Docker Buildx with optimal configuration
+      if: steps.platform-check.outputs.is_multi_platform == 'true'
+      id: buildx
+      uses: docker/setup-buildx-action@v4
+      with:
+        driver: docker-container
+        driver-opts: |
+          image=moby/buildkit:buildx-stable-1
+          network=host
+        buildkitd-flags: |
+          --debug=false
+          --allow-insecure-entitlement security.insecure
+          --oci-worker-garbage-collection=true
+          --oci-worker-gc-keepstorage=20GB
+
+    - name: Set up Docker Buildx with optimal configuration
+      if: steps.platform-check.outputs.is_multi_platform == 'false'
+      id: buildx
+      uses: docker/setup-buildx-action@v4
+      with:
+        driver: docker
+
+    - name: Configure cache strategy
+      id: cache-config
+      shell: bash
+      run: |
+        CACHE_SCOPE="${{ inputs.cache-scope }}"
+        GITHUB_REF_NAME="${GITHUB_REF_NAME:-}"
+        
+        # Intelligent cache scope determination
+        if [[ -n "$CACHE_SCOPE" ]]; then
+          SCOPE="$CACHE_SCOPE"
+        elif [[ "$GITHUB_REF_NAME" == "main" ]] || [[ "$GITHUB_REF_NAME" == "master" ]]; then
+          SCOPE="main"
+        elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+          SCOPE="pr-${{ github.event.number }}"
+        else
+          SCOPE="${GITHUB_REF_NAME:-default}"
+        fi
+        
+        echo "cache_scope=$SCOPE" >> "$GITHUB_OUTPUT"
+        echo "::notice::Using cache scope: $SCOPE"
+        
+        # Optimize cache configuration based on event type
+        if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+          echo "cache_from=type=gha,scope=$SCOPE" >> "$GITHUB_OUTPUT"
+          echo "cache_to=type=gha,scope=$SCOPE,mode=min" >> "$GITHUB_OUTPUT"
+        else
+          echo "cache_from=type=gha,scope=$SCOPE" >> "$GITHUB_OUTPUT"
+          echo "cache_to=type=gha,scope=$SCOPE,mode=max" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Log in to container registry
+      if: ${{ inputs.username != '' && inputs.password != '' }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+
+    - name: Generate Docker metadata
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        context: workflow
+        images: ${{ inputs.registry }}/${{ inputs.image-name }}
+        tags: |
+          type=sha,format=short,prefix={{branch}}-
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=schedule
+          type=raw,value=latest,enable=${{ contains(inputs.tags, 'latest') }}
+        flavor: |
+          latest=${{ contains(inputs.tags, 'latest') && 'true' || 'false' }}
+          prefix=
+          suffix=
+
+    - name: Parse build arguments and secrets
+      id: parse-args
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        ARGS='${{ inputs.build-args }}'
+        SECRETS='${{ inputs.secrets }}'
+        
+        # Parse build args with proper escaping
+        BUILD_ARGS=""
+        if [ -n "$ARGS" ] && [ "$ARGS" != "{}" ] && [ "$ARGS" != "" ]; then
+          BUILD_ARGS=$(echo "$ARGS" | jq -r '
+            to_entries | 
+            map("--build-arg \"\(.key)=\(.value)\"") | 
+            join(" ")
+          ')
+        fi
+        echo "build_args=$BUILD_ARGS" >> "$GITHUB_OUTPUT"
+        
+        # Parse secrets and write to temp files with secure permissions
+        BUILD_SECRETS=""
+        if [ -n "$SECRETS" ] && [ "$SECRETS" != "{}" ] && [ "$SECRETS" != "" ]; then
+          SECRET_DIR=$(mktemp -d /tmp/docker-secrets-XXXXXX)
+          chmod 700 "$SECRET_DIR"
+          
+          echo "$SECRETS" | jq -r 'to_entries[] | "\(.key)=\(.value)"' | while IFS='=' read -r key value; do
+            secret_file="$SECRET_DIR/$key"
+            echo "$value" > "$secret_file"
+            chmod 600 "$secret_file"
+            BUILD_SECRETS+="--secret id=$key,src=$secret_file "
+          done
+          
+          echo "secret_dir=$SECRET_DIR" >> "$GITHUB_OUTPUT"
+        fi
+        echo "build_secrets=$BUILD_SECRETS" >> "$GITHUB_OUTPUT"
+
+    - name: Build and push Docker image
+      id: build-and-push
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        platforms: ${{ inputs.platforms }}
+        pull: ${{ inputs.pull }}
+        push: ${{ inputs.push }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        target: ${{ inputs.target }}
+        build-args: ${{ steps.parse-args.outputs.build_args }}
+        secrets: ${{ steps.parse-args.outputs.build_secrets }}
+        no-cache: true
+        # cache-from: ${{ steps.cache-config.outputs.cache_from }}
+        # cache-to: ${{ steps.cache-config.outputs.cache_to }}
+        provenance: false
+        sbom: false
+        # no-cache-filters: |
+        #   ${{ inputs.target && format('{0}', inputs.target) || '' }}
+
+    - name: Clean up secrets
+      if: always()
+      shell: bash
+      run: |
+        SECRET_DIR="${{ steps.parse-args.outputs.secret_dir }}"
+        if [ -n "$SECRET_DIR" ] && [ -d "$SECRET_DIR" ]; then
+          find "$SECRET_DIR" -type f -exec shred -u {} \; 2>/dev/null || true
+          rm -rf "$SECRET_DIR" 2>/dev/null || true
+        fi
+        exit 0
+
+    - name: Verify image digest
+      if: ${{ inputs.push == 'true' }}
+      shell: bash
+      run: |
+        DIGEST="${{ steps.build-and-push.outputs.digest }}"
+        if [ -z "$DIGEST" ]; then
+          echo "::error::Failed to get image digest"
+          exit 1
+        fi
+        
+        # Verify the image was actually pushed
+        if [[ "${{ inputs.registry }}" == "ghcr.io" ]] && [[ -n "${{ inputs.github-token }}" ]]; then
+          IMAGE="${{ inputs.registry }}/${{ inputs.image-name }}@$DIGEST"
+          echo "::notice::Verifying image: $IMAGE"
+          # Optional: Add verification against GHCR API here
+        fi
+
+    - name: Output build results
+      shell: bash
+      run: |
+        TAGS="${{ steps.meta.outputs.tags }}"
+        DIGEST="${{ steps.build-and-push.outputs.digest }}"
+        LABELS="${{ steps.meta.outputs.labels }}"
+        
+        echo "::group::Build Results"
+        echo "✅ Image built successfully!"
+        echo ""
+        echo "📦 Tags:"
+        echo "$TAGS" | tr ',' '\n' | sed 's/^/  - /'
+        echo ""
+        echo "🔑 Digest: $DIGEST"
+        echo ""
+        echo "🏷️ Labels:"
+        echo "$LABELS" | tr ',' '\n' | sed 's/^/  - /'
+        echo ""
+        echo "⏱️ Duration: $(date -u -d @$SECONDS '+%H:%M:%S')"
+        echo "::endgroup::"
+        
+        # Export outputs for other steps
+        echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
