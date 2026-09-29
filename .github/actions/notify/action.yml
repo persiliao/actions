@@ -47,9 +47,21 @@ inputs:
     required: false
     default: ""
 
-  # WeCom
+  # WeCom (group robot webhook)
   wecom-webhook:
     required: false
+  wecom-msgtype:
+    description: "text | markdown"
+    required: false
+    default: "markdown"
+  wecom-mentioned-list:
+    description: "WeCom userids, comma separated, use @all for everyone"
+    required: false
+    default: ""
+  wecom-mentioned-mobile-list:
+    description: "Mobile numbers, comma separated"
+    required: false
+    default: ""
 
   # Telegram
   telegram-token:
@@ -136,19 +148,59 @@ runs:
         to: ${{ inputs.mail-to }}
         body: ${{ steps.meta.outputs.msg }}
 
-    # ---------- WeCom (企业微信) ----------
     - name: Notify WeCom
       if: inputs.channel == 'wecom' && inputs.wecom-webhook != ''
       shell: bash
+      env:
+        WEBHOOK: ${{ inputs.wecom-webhook }}
+        MSGTYPE: ${{ inputs.wecom-msgtype }}
+        CONTENT: |
+          ### ${{ inputs.title }}
+          
+          ${{ steps.meta.outputs.msg }}
+        MENTIONED_LIST: ${{ inputs.wecom-mentioned-list }}
+        MENTIONED_MOBILE_LIST: ${{ inputs.wecom-mentioned-mobile-list }}
       run: |
-        curl -sS -X POST "${{ inputs.wecom-webhook }}" \
-          -H "Content-Type: application/json" \
-          -d '{
-            "msgtype": "markdown",
-            "markdown": {
-              "content": "### ${{ inputs.title }}\n${{ steps.meta.outputs.msg }}"
-            }
-          }'
+        set -euo pipefail
+
+        if [[ "$MSGTYPE" == "text" ]]; then
+          PAYLOAD="$(jq -n \
+            --arg content "$CONTENT" \
+            --arg mentioned_list "$MENTIONED_LIST" \
+            --arg mentioned_mobile_list "$MENTIONED_MOBILE_LIST" \
+            '{
+              msgtype: "text",
+              text: (
+                {content: $content}
+                + (if $mentioned_list != "" then {mentioned_list: ($mentioned_list | split(","))} else {} end)
+                + (if $mentioned_mobile_list != "" then {mentioned_mobile_list: ($mentioned_mobile_list | split(","))} else {} end)
+              )
+            }')"
+        else
+          PAYLOAD="$(jq -n \
+            --arg content "$CONTENT" \
+            --arg mentioned_list "$MENTIONED_LIST" \
+            --arg mentioned_mobile_list "$MENTIONED_MOBILE_LIST" \
+            '{
+              msgtype: "markdown",
+              markdown: (
+                {content: $content}
+                + (if $mentioned_list != "" then {mentioned_list: ($mentioned_list | split(","))} else {} end)
+                + (if $mentioned_mobile_list != "" then {mentioned_mobile_list: ($mentioned_mobile_list | split(","))} else {} end)
+              )
+            }')"
+        fi
+
+        RESPONSE="$(curl -sS -X POST "$WEBHOOK" \
+          -H 'Content-Type: application/json' \
+          --data "$PAYLOAD")"
+
+        echo "WeCom response: $RESPONSE"
+        ERRCODE="$(echo "$RESPONSE" | jq -r '.errcode // empty')"
+        if [[ "$ERRCODE" != "0" && "$ERRCODE" != "" ]]; then
+          echo "::error::WeCom webhook error: $RESPONSE"
+          exit 1
+        fi
 
     # ---------- Telegram ----------
     - name: Notify Telegram
