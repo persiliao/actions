@@ -103,6 +103,58 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Set drone versions
+      run: |
+        echo "DRONE_SCP_VERSION=1.8.1" >> $GITHUB_ENV
+        echo "DRONE_SSH_VERSION=1.8.4" >> $GITHUB_ENV
+        echo "✅ Version variables set:"
+        echo "  DRONE_SCP_VERSION=${DRONE_SCP_VERSION:-1.8.1}"
+        echo "  DRONE_SSH_VERSION=${DRONE_SSH_VERSION:-1.8.4}"
+
+    - name: Copy and rename drone binaries to GITHUB_ACTION_PATH
+      run: |
+        SCP_SRC="/usr/local/bin/drone-scp"
+        SSH_SRC="/usr/local/bin/drone-ssh"
+        ARCH=$(uname -m)
+        case "${ARCH}" in
+          x86_64|amd64)
+            TARGETARCH="amd64"
+            ;;
+          aarch64|arm64)
+            TARGETARCH="arm64"
+            ;;
+          *)
+            echo "❌ Unsupported architecture: ${ARCH}"
+            echo "Supported architectures: x86_64/amd64, aarch64/arm64"
+            exit 1
+            ;;
+        esac
+        
+        echo "🔍 Detected system architecture: ${ARCH} -> TARGETARCH: ${TARGETARCH}"
+        echo ""
+        
+        mkdir -p ${{ env.GITHUB_ACTION_PATH }}
+        
+        declare -A FILE_MAP
+        FILE_MAP["$SCP_SRC"]="drone-scp-${DRONE_SCP_VERSION}-linux-${TARGETARCH}"
+        FILE_MAP["$SSH_SRC"]="drone-ssh-${DRONE_SSH_VERSION}-linux-${TARGETARCH}"
+        
+        for SRC in "${!FILE_MAP[@]}"; do
+          DEST_NAME="${FILE_MAP[$SRC]}"
+          DEST_PATH="${{ env.GITHUB_ACTION_PATH }}/$DEST_NAME"
+          
+          if [ -f "$SRC" ]; then
+            cp "$SRC" "$DEST_PATH"
+            chmod +x "$DEST_PATH"
+            echo "✅ Copied: $(basename $SRC) -> $DEST_NAME"
+          else
+            echo "⚠️ Source file not found: $SRC"
+          fi
+        done
+        
+        echo ""
+        echo "📁 Files in GITHUB_ACTION_PATH:"
+        ls -la ${{ env.GITHUB_ACTION_PATH }}/drone-* 2>/dev/null || echo "No drone files copied"
     # --- Validate authentication ---
     - name: Validate authentication method
       shell: bash
@@ -118,6 +170,7 @@ runs:
       id: scp-transfer
       uses: appleboy/scp-action@v1
       with:
+        version: ${{ env.DRONE_SCP_VERSION }}
         # Target
         host: ${{ inputs.host }}
         port: ${{ inputs.port }}
@@ -155,6 +208,8 @@ runs:
       if: inputs.script != ''
       uses: appleboy/ssh-action@v1
       with:
+        version: ${{ env.DRONE_SSH_VERSION }}
+        # Target
         host: ${{ inputs.host }}
         port: ${{ inputs.port }}
         username: ${{ inputs.username }}
