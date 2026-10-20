@@ -168,7 +168,7 @@ runs:
     - name: SCP file transfer
       if: inputs.source != '' && inputs.target != ''
       id: scp-transfer
-      uses: appleboy/scp-action@v1
+      uses: persiliao/appleboy-ssh-action@master
       with:
         version: ${{ env.DRONE_SCP_VERSION }}
         # Target
@@ -206,7 +206,7 @@ runs:
     # --- Execute custom command after SCP ---
     - name: Execute remote command
       if: inputs.script != ''
-      uses: appleboy/ssh-action@v1
+      uses: persiliao/appleboy-ssh-action@master
       with:
         version: ${{ env.DRONE_SSH_VERSION }}
         # Target
